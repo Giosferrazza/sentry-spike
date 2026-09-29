@@ -20,6 +20,11 @@
         "NSLocationWhenInUseUsageDescription": "Sentry checks when you arrive at a location you set, so it can nudge you to pause.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Sentry needs Always access so it can detect arrivals even when the app is in the background.",
         "NSLocationAlwaysUsageDescription": "Sentry needs Always access so it can detect arrivals even when the app is in the background."
+      },
+      "entitlements": {
+        "com.apple.security.application-groups": [
+          "group.com.giosferrazza.sentryspike"
+        ]
       }
     },
     "android": {
@@ -59,9 +64,11 @@
           "isIosBackgroundLocationEnabled": true
         }
       ],
+      "./plugins/withoutPushEntitlement",
       "expo-notifications",
       "expo-image",
-      "expo-web-browser"
+      "expo-web-browser",
+      "@bacons/apple-targets"
     ],
     "experiments": {
       "typedRoutes": true,

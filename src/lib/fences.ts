@@ -5,6 +5,7 @@ import * as TaskManager from 'expo-task-manager';
 import { Vibration } from 'react-native';
 
 import { enclosingCircle, LatLng, pointInPolygon } from './geo';
+import { syncWidget } from './widget';
 
 export type FenceKind = 'avoid' | 'seek';
 
@@ -70,6 +71,7 @@ export async function loadFences(): Promise<Fence[]> {
 export async function saveFences(fences: Fence[]): Promise<void> {
   await AsyncStorage.setItem(FENCES_KEY, JSON.stringify(fences));
   await resyncIfMonitoring(fences);
+  await refreshWidget();
 }
 
 export async function loadLog(): Promise<LogEntry[]> {
@@ -79,12 +81,20 @@ export async function loadLog(): Promise<LogEntry[]> {
 
 export async function clearLog(): Promise<void> {
   await AsyncStorage.removeItem(LOG_KEY);
+  await refreshWidget();
 }
 
 async function appendLog(entry: LogEntry): Promise<void> {
   const log = await loadLog();
   log.unshift(entry);
   await AsyncStorage.setItem(LOG_KEY, JSON.stringify(log.slice(0, 200)));
+  await refreshWidget();
+}
+
+// Push the current state to the home screen widget.
+export async function refreshWidget(): Promise<void> {
+  const [log, fences, monitoring] = await Promise.all([loadLog(), loadFences(), isMonitoring()]);
+  syncWidget(log, fences, monitoring);
 }
 
 export async function isMonitoring(): Promise<boolean> {
@@ -109,10 +119,12 @@ export async function startMonitoring(fences: Fence[]): Promise<void> {
       notifyOnExit: false,
     }))
   );
+  await refreshWidget();
 }
 
 export async function stopMonitoring(): Promise<void> {
   if (await isMonitoring()) await Location.stopGeofencingAsync(GEOFENCE_TASK);
+  await refreshWidget();
 }
 
 async function resyncIfMonitoring(fences: Fence[]): Promise<void> {

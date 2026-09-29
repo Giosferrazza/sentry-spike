@@ -37,9 +37,16 @@ export const MAX_FENCES = 20; // hard iOS limit on monitored regions per app
 const FENCES_KEY = 'sentry-fences';
 const LOG_KEY = 'sentry-entry-log';
 
+// Orange/blue, validated for color-vision deficiency on the dark surface
+// (the old red/green pair failed: deutan ΔE 7.6).
 export const KIND_COLORS: Record<FenceKind, string> = {
-  avoid: '#e0564f',
-  seek: '#4fb286',
+  avoid: '#d95926',
+  seek: '#3987e5',
+};
+
+export const KIND_LABELS: Record<FenceKind, string> = {
+  avoid: 'Stay out',
+  seek: 'Go here',
 };
 
 export function makeFence(polygon: LatLng[], name: string, kind: FenceKind): Fence {

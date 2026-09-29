@@ -224,7 +224,7 @@ export default function MapScreen() {
           </>
         )}
 
-        {stroke.length > 1 && <Polyline coordinates={stroke} strokeColor="#5b7fff" strokeWidth={4} />}
+        {stroke.length > 1 && <Polyline coordinates={stroke} strokeColor="#ffffff" strokeWidth={4} />}
       </MapView>
 
       {drawing && <View style={StyleSheet.absoluteFill} {...pan.panHandlers} />}

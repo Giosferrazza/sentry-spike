@@ -1,11 +1,9 @@
 import { NativeTabs } from 'expo-router/unstable-native-tabs';
-import { useColorScheme } from 'react-native';
-
 import { Colors } from '@/constants/theme';
 
 export default function AppTabs() {
-  const scheme = useColorScheme();
-  const colors = Colors[scheme === 'unspecified' ? 'light' : scheme];
+  // Every screen is dark-styled, so the tab bar is too, whatever the system theme.
+  const colors = Colors.dark;
 
   return (
     <NativeTabs
@@ -15,6 +13,11 @@ export default function AppTabs() {
       <NativeTabs.Trigger name="index">
         <NativeTabs.Trigger.Label>Map</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon sf="map" />
+      </NativeTabs.Trigger>
+
+      <NativeTabs.Trigger name="insights">
+        <NativeTabs.Trigger.Label>Insights</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf="chart.bar" />
       </NativeTabs.Trigger>
 
       <NativeTabs.Trigger name="monitor">

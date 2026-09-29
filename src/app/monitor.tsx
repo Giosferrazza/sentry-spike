@@ -90,9 +90,10 @@ export default function MonitorScreen() {
   return (
     <ScrollView
       style={styles.root}
+      contentInsetAdjustmentBehavior="never"
       contentContainerStyle={[
         styles.container,
-        { paddingTop: insets.top + 16, paddingBottom: insets.bottom + BottomTabInset + 24 },
+        { paddingTop: 16, paddingBottom: insets.bottom + BottomTabInset + 24 },
       ]}>
       <Text style={styles.h1}>Monitor</Text>
 

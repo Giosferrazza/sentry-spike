@@ -54,5 +54,7 @@ export async function toggleHabit(fenceId: string, habitId: string): Promise<Rou
       : { ...r, done: r.done.includes(habitId) ? r.done.filter((h) => h !== habitId) : [...r.done, habitId] }
   );
   await saveRuns(next);
+  // Routine progress moves the Life Score shown on the widget.
+  (await import('./fences')).refreshWidget().catch(() => {});
   return next.find((r) => r.id === run.id)!;
 }

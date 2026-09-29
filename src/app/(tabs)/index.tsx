@@ -7,6 +7,7 @@ import { Card, Dot, Icon, Row, Screen } from '@/components/ui';
 import { C, R, S, T } from '@/constants/ui';
 import { byDay, byPlace, heatmap, lifeScore, peakAvoidWindow } from '@/lib/analytics';
 import { Fence, KIND_COLORS, loadFences, loadLog, LogEntry } from '@/lib/fences';
+import { loadRuns, RoutineRun } from '@/lib/routines';
 
 const WEEK_TICKS = [0, 1, 2, 3, 4, 5, 6];
 const TOP_PLACES = 5;
@@ -14,19 +15,21 @@ const TOP_PLACES = 5;
 export default function InsightsScreen() {
   const [log, setLog] = useState<LogEntry[]>([]);
   const [fences, setFences] = useState<Fence[]>([]);
+  const [runs, setRuns] = useState<RoutineRun[]>([]);
 
   useFocusEffect(
     useCallback(() => {
-      Promise.all([loadLog(), loadFences()]).then(([l, f]) => {
+      Promise.all([loadLog(), loadFences(), loadRuns()]).then(([l, f, r]) => {
         setLog(l);
         setFences(f);
+        setRuns(r);
       });
     }, [])
   );
 
-  const life = lifeScore(log);
+  const life = lifeScore(log, runs, fences);
   const week = byDay(log, 7, new Date(), 'weekday');
-  const weekTotal = life.seek + life.avoid;
+  const weekTotal = week.reduce((n, d) => n + d.counts.avoid + d.counts.seek, 0);
   const peak = peakAvoidWindow(log);
   const history = heatmap(log);
   const activeDays = history.flat().filter((d) => d.seek + d.avoid > 0).length;
@@ -91,13 +94,18 @@ export default function InsightsScreen() {
 }
 
 function LifeScoreCard({ life }: { life: ReturnType<typeof lifeScore> }) {
-  const visits = life.seek + life.avoid;
+  const n = (x: number) => (Number.isInteger(x) ? String(x) : x.toFixed(1));
+  const wins = life.visits + life.skipped + life.routines;
+  const parts = [
+    life.visits && `${life.visits} go-here ${life.visits === 1 ? 'visit' : 'visits'}`,
+    life.skipped && `${life.skipped} skipped`,
+    life.routines && `${n(life.routines)} ${life.routines === 1 ? 'routine' : 'routines'} done`,
+  ].filter(Boolean);
   const explain =
-    visits === 0
-      ? 'No fence visits this week yet, so you start at a neutral 50.'
-      : visits === 1
-        ? `Your one visit this week was to a ${life.seek ? 'Go here' : 'Stay out'} place.`
-        : `${life.seek} of your ${visits} visits this week were to Go here places.`;
+    wins + life.slips === 0
+      ? 'Nothing logged this week yet, so you start at a neutral 50.'
+      : `${n(wins)} ${wins === 1 ? 'win' : 'wins'}, ${life.slips} ${life.slips === 1 ? 'slip' : 'slips'}` +
+        (parts.length ? ` · ${parts.join(', ')}` : '');
   const delta =
     life.delta === null
       ? 'First week'

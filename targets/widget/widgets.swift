@@ -18,11 +18,15 @@ struct Snapshot: Codable {
         let kind: String // "avoid" | "seek"
         let name: String
     }
-    // Visits per local day; t = local midnight, epoch ms.
+    // Per local day; t = local midnight, epoch ms. s/a = go-here/stay-out
+    // visits (heatmap); w/l = wins/slips for the Life Score (absent in
+    // snapshots from older app builds, which fall back to s/a).
     struct DayCount: Codable {
         let t: Double
         let s: Int
         let a: Int
+        let w: Double?
+        let l: Double?
     }
     let monitoring: Bool
     let fenceCount: Int
@@ -44,7 +48,8 @@ struct Snapshot: Codable {
             let seed = (back * 7 + 3) % 11
             if seed < 4 { continue }
             let t = cal.date(byAdding: .day, value: -back, to: today)!.timeIntervalSince1970 * 1000
-            days.append(DayCount(t: t, s: seed % 3, a: seed % 4 == 0 ? 2 : seed % 2))
+            let s = seed % 3, a = seed % 4 == 0 ? 2 : seed % 2
+            days.append(DayCount(t: t, s: s, a: a, w: Double(s), l: Double(a)))
         }
         let last = Entry(ts: Date().addingTimeInterval(-3_600).timeIntervalSince1970 * 1000, kind: "seek", name: "Gym")
         return Snapshot(monitoring: true, fenceCount: 4, entries: [last], days: days)
@@ -54,6 +59,8 @@ struct Snapshot: Codable {
 struct Tally {
     var seek = 0
     var avoid = 0
+    var wins = 0.0
+    var slips = 0.0
     var total: Int { seek + avoid }
 }
 
@@ -64,11 +71,13 @@ func dailyTallies(_ snap: Snapshot) -> [Date: Tally] {
         let day = cal.startOfDay(for: Date(timeIntervalSince1970: d.t / 1000))
         out[day, default: Tally()].seek += d.s
         out[day, default: Tally()].avoid += d.a
+        out[day, default: Tally()].wins += d.w ?? Double(d.s)
+        out[day, default: Tally()].slips += d.l ?? Double(d.a)
     }
     return out
 }
 
-// MARK: - Life score (mirrors lifeScore() in src/lib/analytics.ts)
+// MARK: - Life score (wins vs slips; mirrors lifeScore() in src/lib/analytics.ts)
 
 struct LifeScore {
     let score: Int
@@ -82,13 +91,14 @@ func lifeScore(_ tallies: [Date: Tally], now: Date) -> LifeScore {
     var cur = Tally(), prev = Tally()
     for (day, t) in tallies {
         guard let age = cal.dateComponents([.day], from: day, to: today).day else { continue }
-        if age >= 0 && age < 7 { cur.seek += t.seek; cur.avoid += t.avoid }
-        else if age >= 7 && age < 14 { prev.seek += t.seek; prev.avoid += t.avoid }
+        if age >= 0 && age < 7 { cur.wins += t.wins; cur.slips += t.slips }
+        else if age >= 7 && age < 14 { prev.wins += t.wins; prev.slips += t.slips }
     }
-    func score(_ t: Tally) -> Int { Int((100.0 * Double(t.seek + 1) / Double(t.total + 2)).rounded()) }
+    // Wins vs slips, Laplace-smoothed (mirrors scoreOf in analytics.ts).
+    func score(_ t: Tally) -> Int { Int((100.0 * (t.wins + 1) / (t.wins + t.slips + 2)).rounded()) }
     let s = score(cur)
     let band = s >= 80 ? "Thriving" : s >= 60 ? "On track" : s >= 40 ? "Mixed" : "Rough week"
-    return LifeScore(score: s, band: band, delta: prev.total > 0 ? s - score(prev) : nil)
+    return LifeScore(score: s, band: band, delta: prev.wins + prev.slips > 0 ? s - score(prev) : nil)
 }
 
 // MARK: - Timeline

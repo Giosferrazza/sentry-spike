@@ -6,7 +6,7 @@ import { Vibration } from 'react-native';
 
 import { distanceMeters, enclosingCircle, LatLng, pointInPolygon } from './geo';
 import { decideEnter, Presence } from './presence';
-import { Habit, startRun } from './routines';
+import { Habit, loadRuns, startRun } from './routines';
 import { syncWidget } from './widget';
 
 export type FenceKind = 'avoid' | 'seek';
@@ -35,6 +35,8 @@ export type LogEntry = {
   insidePolygon: boolean | null;
   // Made with Monitor's Test > "Arrive at …", not a real geofence event.
   simulated?: boolean;
+  // Answer to a stay-out alert's buttons.
+  outcome?: 'skipped' | 'went';
 };
 
 export const GEOFENCE_TASK = 'sentry-geofence-task';
@@ -112,8 +114,13 @@ export async function migrateRegions(): Promise<void> {
 
 // Push the current state to the home screen widget.
 export async function refreshWidget(): Promise<void> {
-  const [log, fences, monitoring] = await Promise.all([loadLog(), loadFences(), isMonitoring()]);
-  syncWidget(log, fences, monitoring);
+  const [log, fences, monitoring, runs] = await Promise.all([
+    loadLog(),
+    loadFences(),
+    isMonitoring(),
+    loadRuns(),
+  ]);
+  syncWidget(log, fences, monitoring, runs);
 }
 
 // Mark fences you're standing in right now as "inside" before (re)starting
@@ -191,13 +198,58 @@ async function currentPosition(): Promise<LatLng | null> {
   }
 }
 
-export async function buzz(title: string, body: string, data?: Record<string, string>): Promise<void> {
+export async function buzz(
+  title: string,
+  body: string,
+  opts: { data?: Record<string, string>; category?: string } = {}
+): Promise<void> {
   Vibration.vibrate([0, 400, 200, 400]);
   await Notifications.scheduleNotificationAsync({
-    content: { title, body, sound: true, data },
+    content: { title, body, sound: true, data: opts.data, categoryIdentifier: opts.category },
     trigger: null,
   });
 }
+
+// ------------------------------------------------------------
+// Stay-out alert buttons. Answering from the notification (no need to open
+// the app) records the outcome on that log entry; "Skipping it" counts as a
+// win in the Life Score.
+// ------------------------------------------------------------
+const STAY_OUT_CATEGORY = 'stay-out';
+const ACTION_SKIP = 'skip';
+const ACTION_WENT = 'went';
+
+Notifications.setNotificationCategoryAsync(STAY_OUT_CATEGORY, [
+  { identifier: ACTION_SKIP, buttonTitle: 'Skipping it', options: { opensAppToForeground: false } },
+  {
+    identifier: ACTION_WENT,
+    buttonTitle: 'Going in anyway',
+    options: { opensAppToForeground: false, isDestructive: true },
+  },
+]).catch(() => {});
+
+async function handleAlertAnswer(r: Notifications.NotificationResponse): Promise<void> {
+  const outcome =
+    r.actionIdentifier === ACTION_SKIP ? 'skipped' : r.actionIdentifier === ACTION_WENT ? 'went' : null;
+  const entryTs = r.notification.request.content.data?.entryTs;
+  if (!outcome || typeof entryTs !== 'string') return;
+  const log = await loadLog();
+  const i = log.findIndex((e) => e.ts === entryTs && e.kind === 'avoid');
+  if (i < 0 || log[i].outcome) return; // already answered (e.g. seen again on launch)
+  log[i] = { ...log[i], outcome };
+  await AsyncStorage.setItem(LOG_KEY, JSON.stringify(log));
+  await refreshWidget();
+}
+
+// Module scope so it's registered even when iOS wakes the app in the
+// background just to deliver the button tap.
+Notifications.addNotificationResponseReceivedListener((r) => {
+  handleAlertAnswer(r).catch(() => {});
+});
+// A tap that launched the app before the listener existed.
+Notifications.getLastNotificationResponseAsync()
+  .then((r) => r && handleAlertAnswer(r))
+  .catch(() => {});
 
 // ------------------------------------------------------------
 // Runs in the background when iOS reports a region event. Must be defined at
@@ -242,27 +294,32 @@ async function handleArrival(fence: Fence, now: Date, insidePolygon: boolean | n
   // Buzz on the circle entry regardless: a missed nudge is worse than an early
   // one for this test. The polygon check is logged so we can see how often the
   // circle fires before you're actually inside the shape.
-  if (fence.kind === 'avoid') {
-    await buzz(`Hey — you wanted to skip ${fence.name}.`, "There's food at home. Want to pause for a second?");
-  } else if (fence.habits?.length) {
-    // Tapping opens the checklist (see useNotificationLinks in the root layout).
-    await startRun(fence.id, now);
-    const n = fence.habits.length;
-    await buzz(`${fence.name} routine`, `${n} ${n === 1 ? 'step' : 'steps'}, starting with ${fence.habits[0].title}.`, {
-      url: `/routine/${fence.id}`,
-    });
-  } else {
-    await buzz(`You made it to ${fence.name}.`, 'Nice. That counts.');
-  }
-
+  const entryTs = now.toISOString();
+  // Log first so an instant tap on the alert's buttons finds its entry.
   await appendLog({
-    ts: now.toISOString(),
+    ts: entryTs,
     fenceId: fence.id,
     name: fence.name,
     kind: fence.kind,
     insidePolygon,
     ...(simulated ? { simulated: true } : {}),
   });
+
+  if (fence.kind === 'avoid') {
+    await buzz(`Hey — you wanted to skip ${fence.name}.`, "There's food at home. Want to pause for a second?", {
+      category: STAY_OUT_CATEGORY,
+      data: { entryTs },
+    });
+  } else if (fence.habits?.length) {
+    // Tapping opens the checklist (see useNotificationLinks in the root layout).
+    await startRun(fence.id, now);
+    const n = fence.habits.length;
+    await buzz(`${fence.name} routine`, `${n} ${n === 1 ? 'step' : 'steps'}, starting with ${fence.habits[0].title}.`, {
+      data: { url: `/routine/${fence.id}` },
+    });
+  } else {
+    await buzz(`You made it to ${fence.name}.`, 'Nice. That counts.');
+  }
 }
 
 // Test hook: act as if you just arrived at this fence. Skips the presence

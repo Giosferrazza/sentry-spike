@@ -178,7 +178,9 @@ export default function MonitorScreen() {
               title={e.name ?? (e as any).region}
               subtitle={when(e.ts)}
               trailing={
-                e.simulated ? (
+                e.outcome ? (
+                  <Text style={styles.testTag}>{e.outcome === 'skipped' ? 'skipped' : 'went in'}</Text>
+                ) : e.simulated ? (
                   <Text style={styles.testTag}>test</Text>
                 ) : e.insidePolygon === false ? (
                   <Text style={T.caption}>circle only</Text>

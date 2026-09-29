@@ -1,4 +1,5 @@
 import type { Fence, FenceKind, LogEntry } from './fences';
+import type { RoutineRun } from './routines';
 
 export type KindCounts = Record<FenceKind, number>;
 export type Bucket = { label: string; counts: KindCounts };
@@ -135,43 +136,106 @@ export function niceMax(n: number): number {
 }
 
 // ---------------------------------------------------------------------------
-// Life score: of this week's fence visits, what share were "go here" places?
-// Laplace-smoothed (+1 / +2) so no visits reads as a neutral 50 and one visit
-// can't swing it to 0 or 100.
+// Life score: wins vs slips over the last 7 days, 0-100.
+//   wins  = go-here visits + stay-out alerts answered "Skipping it"
+//           + completed routines (a partial routine counts by fraction)
+//   slips = stay-out visits not answered "Skipping it"
+// Laplace-smoothed (+1 / +2) so an empty week reads as a neutral 50 and one
+// event can't swing it to 0 or 100.
+
+export type DayScore = { wins: number; slips: number };
 
 export type LifeScore = {
   score: number; // 0-100
   band: 'Thriving' | 'On track' | 'Mixed' | 'Rough week';
-  delta: number | null; // vs the previous 7 days; null if that week had no visits
-  seek: number;
-  avoid: number;
+  delta: number | null; // vs the previous 7 days; null if that week was empty
+  visits: number; // go-here visits
+  skipped: number; // stay-out alerts answered "Skipping it"
+  routines: number; // completed-routine credit (fractional)
+  slips: number;
 };
 
-function scoreOf(seek: number, avoid: number): number {
-  return Math.round((100 * (seek + 1)) / (seek + avoid + 2));
+export function scoreOf(wins: number, slips: number): number {
+  return Math.round((100 * (wins + 1)) / (wins + slips + 2));
 }
 
 export function bandOf(score: number): LifeScore['band'] {
   return score >= 80 ? 'Thriving' : score >= 60 ? 'On track' : score >= 40 ? 'Mixed' : 'Rough week';
 }
 
-export function lifeScore(log: LogEntry[], now = new Date()): LifeScore {
-  const today = startOfDay(now);
-  const cur = zero();
-  const prev = zero();
+// Share of a run's habits that were checked off (0 if the fence is gone or
+// has no habits).
+function runCredit(run: RoutineRun, fences: Fence[]): number {
+  const habits = fences.find((f) => f.id === run.fenceId)?.habits ?? [];
+  if (!habits.length) return 0;
+  return run.done.filter((d) => habits.some((h) => h.id === d)).length / habits.length;
+}
+
+// Wins and slips per local day (keyed by midnight, epoch ms). Shared with the
+// widget snapshot so both compute the same score.
+export function dailyScores(log: LogEntry[], runs: RoutineRun[], fences: Fence[]): Map<number, DayScore> {
+  const days = new Map<number, DayScore>();
+  const at = (ts: string) => {
+    const k = startOfDay(new Date(ts));
+    const d = days.get(k) ?? { wins: 0, slips: 0 };
+    days.set(k, d);
+    return d;
+  };
   for (const e of valid(log)) {
-    const age = Math.floor((today - startOfDay(new Date(e.ts))) / DAY_MS);
-    if (age >= 0 && age < 7) cur[e.kind]++;
-    else if (age >= 7 && age < 14) prev[e.kind]++;
+    if (e.kind === 'seek' || e.outcome === 'skipped') at(e.ts).wins++;
+    else at(e.ts).slips++;
   }
-  const score = scoreOf(cur.seek, cur.avoid);
-  const prevVisits = prev.seek + prev.avoid;
+  for (const r of runs) {
+    const c = runCredit(r, fences);
+    if (c > 0) at(r.startedAt).wins += c;
+  }
+  return days;
+}
+
+export function lifeScore(
+  log: LogEntry[],
+  runs: RoutineRun[] = [],
+  fences: Fence[] = [],
+  now = new Date()
+): LifeScore {
+  const today = startOfDay(now);
+  const age = (ts: string) => Math.floor((today - startOfDay(new Date(ts))) / DAY_MS);
+  const thisWeek = (ts: string) => age(ts) >= 0 && age(ts) < 7;
+  const lastWeek = (ts: string) => age(ts) >= 7 && age(ts) < 14;
+
+  let visits = 0,
+    skipped = 0,
+    slips = 0,
+    routines = 0,
+    prevWins = 0,
+    prevSlips = 0;
+  for (const e of valid(log)) {
+    const win = e.kind === 'seek' || e.outcome === 'skipped';
+    if (thisWeek(e.ts)) {
+      if (e.kind === 'seek') visits++;
+      else if (e.outcome === 'skipped') skipped++;
+      else slips++;
+    } else if (lastWeek(e.ts)) {
+      if (win) prevWins++;
+      else prevSlips++;
+    }
+  }
+  for (const r of runs) {
+    const c = runCredit(r, fences);
+    if (thisWeek(r.startedAt)) routines += c;
+    else if (lastWeek(r.startedAt)) prevWins += c;
+  }
+
+  const wins = visits + skipped + routines;
+  const score = scoreOf(wins, slips);
   return {
     score,
     band: bandOf(score),
-    delta: prevVisits ? score - scoreOf(prev.seek, prev.avoid) : null,
-    seek: cur.seek,
-    avoid: cur.avoid,
+    delta: prevWins + prevSlips > 0 ? score - scoreOf(prevWins, prevSlips) : null,
+    visits,
+    skipped,
+    routines,
+    slips,
   };
 }
 

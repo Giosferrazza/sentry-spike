@@ -33,6 +33,26 @@ export function Icon({
   return <SymbolView name={name} size={size} tintColor={color} weight={weight} />;
 }
 
+// Dashed selection rectangle with a pointing hand on its corner. SF Symbols
+// has no dashed version of rectangle.and.hand.point.up.left, so it's
+// composed: a filled hand in the background color knocks out the dashes
+// behind the outlined hand.
+export function LassoSelectIcon({ color, background }: { color: string; background: string }) {
+  return (
+    <View style={{ width: 22, height: 19 }}>
+      <View style={{ position: 'absolute', left: 0, top: 0 }}>
+        <Icon name="rectangle.dashed" size={17} color={color} />
+      </View>
+      <View style={{ position: 'absolute', right: -2, bottom: -3 }}>
+        <Icon name="hand.point.up.left.fill" size={15} color={background} weight="black" />
+      </View>
+      <View style={{ position: 'absolute', right: -1, bottom: -2 }}>
+        <Icon name="hand.point.up.left" size={13} color={color} />
+      </View>
+    </View>
+  );
+}
+
 // Scrollable tab screen with a large title. Native tabs already inset content
 // below the status bar, so only a small top pad is added here.
 export function Screen({
@@ -91,6 +111,7 @@ type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'plain';
 export function Button({
   label,
   icon,
+  iconNode,
   onPress,
   variant = 'primary',
   loading,
@@ -98,6 +119,8 @@ export function Button({
 }: {
   label: string;
   icon?: SymbolName;
+  // A custom icon (e.g. LassoSelectIcon); receives the button's text color.
+  iconNode?: (color: string) => React.ReactNode;
   onPress: () => void;
   variant?: ButtonVariant;
   loading?: boolean;
@@ -114,7 +137,7 @@ export function Button({
         <ActivityIndicator color={fg} />
       ) : (
         <>
-          {icon ? <Icon name={icon} size={16} color={fg} /> : null}
+          {iconNode ? iconNode(fg) : icon ? <Icon name={icon} size={16} color={fg} /> : null}
           <Text style={[s.btnText, { color: fg }]}>{label}</Text>
         </>
       )}

@@ -18,7 +18,7 @@ import { router, useFocusEffect } from 'expo-router';
 import MapView, { Circle, Polygon, Polyline, Region } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Button, Icon, IconButton, Segmented } from '@/components/ui';
+import { Button, Icon, IconButton, LassoSelectIcon, Segmented } from '@/components/ui';
 import { BottomTabInset } from '@/constants/theme';
 import { C, R, S, T } from '@/constants/ui';
 import {
@@ -517,7 +517,12 @@ export default function MapScreen() {
                 style={styles.fab}
               />
             ) : (
-              <Button label="Draw fence" icon="lasso" onPress={() => setDrawing(true)} style={styles.fab} />
+              <Button
+                label="Draw fence"
+                iconNode={(fg) => <LassoSelectIcon color={fg} background={C.action} />}
+                onPress={() => setDrawing(true)}
+                style={styles.fab}
+              />
             )}
           </View>
         )}

@@ -9,7 +9,10 @@ export default function AppTabs() {
     <NativeTabs
       backgroundColor={colors.background}
       indicatorColor={colors.backgroundElement}
-      labelStyle={{ selected: { color: colors.text } }}>
+      // White for the selected tab so blue stays reserved for "Go here" data.
+      iconColor={{ default: colors.textSecondary, selected: colors.text }}
+      tintColor={colors.text}
+      labelStyle={{ default: { color: colors.textSecondary }, selected: { color: colors.text } }}>
       <NativeTabs.Trigger name="index">
         <NativeTabs.Trigger.Label>Map</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon sf="map" />

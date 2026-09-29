@@ -6,16 +6,17 @@
 import React, { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { C } from '@/constants/ui';
 import type { Bucket, PlaceStat } from '@/lib/analytics';
 import { niceMax } from '@/lib/analytics';
 import { FenceKind, KIND_COLORS, KIND_LABELS } from '@/lib/fences';
 
-export const Ink = {
-  surface: '#161922',
-  primary: '#f3f5f8',
-  secondary: '#8b93a3',
-  muted: '#5a6172',
-  grid: '#262b38',
+const Ink = {
+  surface: C.surface,
+  primary: C.text,
+  secondary: C.textSecondary,
+  muted: C.textMuted,
+  grid: C.line,
 };
 
 // Stack order bottom -> top.
@@ -30,16 +31,6 @@ export function Legend() {
           <Text style={s.legendText}>{KIND_LABELS[k]}</Text>
         </View>
       ))}
-    </View>
-  );
-}
-
-export function StatTile({ label, value, delta }: { label: string; value: string; delta?: string }) {
-  return (
-    <View style={s.tile}>
-      <Text style={s.tileLabel}>{label}</Text>
-      <Text style={s.tileValue}>{value}</Text>
-      {delta ? <Text style={s.tileDelta}>{delta}</Text> : null}
     </View>
   );
 }
@@ -209,16 +200,6 @@ const s = StyleSheet.create({
   swatch: { width: 10, height: 10, borderRadius: 3 },
   legendText: { color: Ink.secondary, fontSize: 13 },
 
-  tile: {
-    flex: 1,
-    backgroundColor: Ink.surface,
-    borderRadius: 14,
-    padding: 14,
-    gap: 2,
-  },
-  tileLabel: { color: Ink.secondary, fontSize: 12 },
-  tileValue: { color: Ink.primary, fontSize: 26, fontWeight: '700' },
-  tileDelta: { color: Ink.muted, fontSize: 12 },
 
   readout: {
     flexDirection: 'row',

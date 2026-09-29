@@ -2,14 +2,14 @@ import { useFocusEffect } from 'expo-router';
 import React, { useCallback, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
-import { Legend, PlaceBars, StackedColumns } from '@/components/charts';
-import { Card, Dot, Screen } from '@/components/ui';
-import { C, S, T } from '@/constants/ui';
-import { byDay, byHour, byPlace, summarize } from '@/lib/analytics';
+import { Heatmap, Legend, StackedColumns } from '@/components/charts';
+import { Card, Dot, Icon, Row, Screen } from '@/components/ui';
+import { C, R, S, T } from '@/constants/ui';
+import { byDay, byPlace, heatmap, lifeScore, peakAvoidWindow } from '@/lib/analytics';
 import { Fence, KIND_COLORS, loadFences, loadLog, LogEntry } from '@/lib/fences';
 
-const DAY_TICKS = [0, 4, 8, 13];
-const HOUR_TICKS = [0, 6, 12, 18, 23];
+const WEEK_TICKS = [0, 1, 2, 3, 4, 5, 6];
+const TOP_PLACES = 5;
 
 export default function InsightsScreen() {
   const [log, setLog] = useState<LogEntry[]>([]);
@@ -24,95 +24,120 @@ export default function InsightsScreen() {
     }, [])
   );
 
-  const sum = summarize(log);
-  const days = byDay(log, 14);
-  const hours = byHour(log);
-  const places = byPlace(log, fences);
-  const total14 = days.reduce((n, d) => n + d.counts.avoid + d.counts.seek, 0);
-  const totalAll = hours.reduce((n, h) => n + h.counts.avoid + h.counts.seek, 0);
-
-  const diff = sum.last7 - sum.prior7;
-  const delta =
-    sum.prior7 === 0 && sum.last7 === 0 ? undefined : `${diff > 0 ? '+' : ''}${diff} vs prior 7 days`;
+  const life = lifeScore(log);
+  const week = byDay(log, 7, new Date(), 'weekday');
+  const weekTotal = life.seek + life.avoid;
+  const peak = peakAvoidWindow(log);
+  const history = heatmap(log);
+  const activeDays = history.flat().filter((d) => d.seek + d.avoid > 0).length;
+  const places = byPlace(log, fences)
+    .filter((p) => p.entries > 0)
+    .slice(0, TOP_PLACES);
 
   return (
     <Screen title="Insights">
-      <Card>
-        <Text style={T.overline}>Last 7 days</Text>
-        <View style={styles.heroRow}>
-          <Text style={styles.hero}>{sum.last7}</Text>
-          <View style={{ paddingBottom: 10 }}>
-            <Text style={T.label}>{sum.last7 === 1 ? 'entry' : 'entries'}</Text>
-            {delta ? <Text style={T.caption}>{delta}</Text> : null}
-          </View>
-        </View>
-        <View style={styles.split}>
-          <View style={styles.splitItem}>
-            <Dot color={KIND_COLORS.avoid} size={8} />
-            <Text style={T.caption}>
-              <Text style={styles.splitNum}>{sum.avoid7}</Text> stay out
-            </Text>
-          </View>
-          <View style={styles.splitItem}>
-            <Dot color={KIND_COLORS.seek} size={8} />
-            <Text style={T.caption}>
-              <Text style={styles.splitNum}>{sum.seek7}</Text> go here
-            </Text>
-          </View>
-          <View style={{ flex: 1 }} />
-          <Text style={T.caption}>
-            <Text style={styles.splitNum}>
-              {sum.shapeHitRate === null ? '—' : `${Math.round(sum.shapeHitRate * 100)}%`}
-            </Text>{' '}
-            in shape
-          </Text>
-        </View>
+      <LifeScoreCard life={life} />
+
+      <Card title="History">
+        <Heatmap
+          grid={history}
+          idle={activeDays ? `${activeDays} days with visits · tap a day` : 'Your days fill in as you visit fences'}
+        />
       </Card>
 
-      {totalAll === 0 ? (
-        <Card title="No entries yet">
-          <Text style={[T.caption, { lineHeight: 20 }]}>
-            Charts fill in once Sentry logs you entering a fence. Start watching on the Monitor tab, then
-            walk or drive into one.
-          </Text>
-        </Card>
-      ) : (
-        <>
-          <Card title="Entries per day" right={<Legend />}>
-            <StackedColumns buckets={days} ticks={DAY_TICKS} idle={`${total14} in the last 14 days · tap a day`} />
-          </Card>
-          <Card title="Time of day" right={<Legend />}>
+      <Card title="This week" right={weekTotal > 0 ? <Legend /> : undefined}>
+        {weekTotal === 0 ? (
+          <Text style={T.caption}>No fence visits in the last 7 days.</Text>
+        ) : (
+          <>
             <StackedColumns
-              buckets={hours}
-              ticks={HOUR_TICKS}
-              height={110}
-              idle={`All ${totalAll} entries by hour · tap an hour`}
+              buckets={week}
+              ticks={WEEK_TICKS}
+              height={120}
+              idle={`${weekTotal} ${weekTotal === 1 ? 'visit' : 'visits'} · tap a day`}
             />
-          </Card>
-        </>
-      )}
+            {peak ? (
+              <View style={styles.pattern}>
+                <Icon name="clock" size={14} color={C.textSecondary} weight="regular" />
+                <Text style={T.caption}>
+                  Most stay-out visits: <Text style={styles.strong}>{peak}</Text>
+                </Text>
+              </View>
+            ) : null}
+          </>
+        )}
+      </Card>
 
       {places.length > 0 && (
-        <Card title="By place">
-          <PlaceBars places={places} />
+        <Card title="Places" flush>
+          {places.map((p, i) => (
+            <Row
+              key={p.fenceId}
+              leading={<Dot color={KIND_COLORS[p.kind]} />}
+              title={p.name}
+              subtitle={
+                p.last
+                  ? `Last ${new Date(p.last).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
+                  : undefined
+              }
+              trailing={<Text style={styles.count}>{p.entries}</Text>}
+              last={i === places.length - 1}
+            />
+          ))}
         </Card>
       )}
     </Screen>
   );
 }
 
+function LifeScoreCard({ life }: { life: ReturnType<typeof lifeScore> }) {
+  const visits = life.seek + life.avoid;
+  const explain =
+    visits === 0
+      ? 'No fence visits this week yet, so you start at a neutral 50.'
+      : visits === 1
+        ? `Your one visit this week was to a ${life.seek ? 'Go here' : 'Stay out'} place.`
+        : `${life.seek} of your ${visits} visits this week were to Go here places.`;
+  const delta =
+    life.delta === null
+      ? 'First week'
+      : life.delta === 0
+        ? 'Same as last week'
+        : `${life.delta > 0 ? '+' : '−'}${Math.abs(life.delta)} vs last week`;
+
+  return (
+    <Card>
+      <Text style={T.overline}>Life score · 7 days</Text>
+      <View style={styles.scoreRow}>
+        <Text style={styles.score}>{life.score}</Text>
+        <View style={styles.scoreSide}>
+          <Text style={T.title}>{life.band}</Text>
+          <Text style={T.caption}>{delta}</Text>
+        </View>
+      </View>
+      <View style={styles.meter} accessibilityLabel={`Life score ${life.score} out of 100`}>
+        <View style={[styles.meterFill, { width: `${Math.max(2, life.score)}%` }]} />
+      </View>
+      <Text style={[T.caption, { marginTop: S.md }]}>{explain}</Text>
+    </Card>
+  );
+}
+
 const styles = StyleSheet.create({
-  heroRow: { flexDirection: 'row', alignItems: 'flex-end', gap: S.md, marginTop: S.xs },
-  hero: { fontSize: 56, fontWeight: '700', color: C.text, letterSpacing: -1.5, fontVariant: ['tabular-nums'] },
-  split: {
+  scoreRow: { flexDirection: 'row', alignItems: 'flex-end', gap: S.md, marginTop: S.xs },
+  score: { fontSize: 64, fontWeight: '700', color: C.text, letterSpacing: -2, fontVariant: ['tabular-nums'] },
+  scoreSide: { paddingBottom: 12, gap: 2 },
+  meter: { height: 8, borderRadius: R.pill, backgroundColor: C.raised, overflow: 'hidden', marginTop: S.sm },
+  meterFill: { height: '100%', borderRadius: R.pill, backgroundColor: C.text },
+  pattern: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: S.lg,
+    gap: 6,
     marginTop: S.md,
     paddingTop: S.md,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: C.line,
   },
-  splitItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  splitNum: { color: C.text, fontWeight: '700' },
+  strong: { color: C.text, fontWeight: '600' },
+  count: { color: C.text, fontSize: 17, fontWeight: '600', fontVariant: ['tabular-nums'] },
 });

@@ -7,7 +7,7 @@ import React, { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { C } from '@/constants/ui';
-import type { Bucket, PlaceStat } from '@/lib/analytics';
+import type { Bucket, HeatDay, PlaceStat } from '@/lib/analytics';
 import { niceMax } from '@/lib/analytics';
 import { FenceKind, KIND_COLORS, KIND_LABELS } from '@/lib/fences';
 
@@ -148,6 +148,118 @@ export function StackedColumns({
   );
 }
 
+// GitHub-style history. Diverging by the day's balance: blue = more go-here
+// visits, orange = more stay-out, neutral gray = even, empty = no visits.
+// Two steps per arm, the lighter one mixed halfway toward the surface.
+const HEAT = {
+  seek2: KIND_COLORS.seek,
+  seek1: '#275083',
+  even: '#454b5a',
+  avoid1: '#773924',
+  avoid2: KIND_COLORS.avoid,
+  empty: '#1d212c',
+};
+
+function heatColor(d: HeatDay): string {
+  if (d.seek + d.avoid === 0) return HEAT.empty;
+  const net = d.seek - d.avoid;
+  if (net === 0) return HEAT.even;
+  if (net > 0) return net >= 2 ? HEAT.seek2 : HEAT.seek1;
+  return -net >= 2 ? HEAT.avoid2 : HEAT.avoid1;
+}
+
+const GAP = 3;
+const DAY_LABEL_W = 18;
+
+export function Heatmap({ grid, idle }: { grid: HeatDay[][]; idle: string }) {
+  const [width, setWidth] = useState(0);
+  const [sel, setSel] = useState<HeatDay | null>(null);
+  const weeks = grid.length;
+  const cell = width ? Math.floor((width - DAY_LABEL_W - GAP * (weeks - 1)) / weeks) : 0;
+
+  // Month label at each column where the month changes (skip one crammed
+  // against the next).
+  const months: { col: number; label: string }[] = [];
+  grid.forEach((col, w) => {
+    const m = col[0].date.getMonth();
+    if (w === 0 || m !== grid[w - 1][0].date.getMonth()) {
+      months.push({ col: w, label: col[0].date.toLocaleDateString(undefined, { month: 'short' }) });
+    }
+  });
+  const monthLabels = months.filter((m, i) => !(i === 0 && months[1] && months[1].col - m.col < 3));
+
+  return (
+    <View onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
+      <View style={s.readout}>
+        {sel ? (
+          <>
+            <Text style={s.readoutTitle}>
+              {sel.date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
+            </Text>
+            <Text style={s.readoutText}>
+              {sel.seek + sel.avoid === 0
+                ? 'No visits'
+                : `${sel.seek} go here · ${sel.avoid} stay out`}
+            </Text>
+          </>
+        ) : (
+          <Text style={s.readoutIdle}>{idle}</Text>
+        )}
+      </View>
+
+      {cell > 0 && (
+        <>
+          <View style={{ height: 14, marginLeft: DAY_LABEL_W }}>
+            {monthLabels.map((m) => (
+              <Text key={m.col} style={[s.heatMonth, { left: m.col * (cell + GAP) }]}>
+                {m.label}
+              </Text>
+            ))}
+          </View>
+          <View style={{ flexDirection: 'row', marginTop: 4 }}>
+            <View style={{ width: DAY_LABEL_W, gap: GAP }}>
+              {['', 'M', '', 'W', '', 'F', ''].map((l, i) => (
+                <Text key={i} style={[s.heatDay, { height: cell, lineHeight: cell }]}>
+                  {l}
+                </Text>
+              ))}
+            </View>
+            <View style={{ flexDirection: 'row', gap: GAP }}>
+              {grid.map((col, w) => (
+                <View key={w} style={{ gap: GAP }}>
+                  {col.map((d, i) => (
+                    <Pressable
+                      key={i}
+                      disabled={d.future}
+                      onPress={() => setSel(sel && sel.date.getTime() === d.date.getTime() ? null : d)}
+                      accessibilityLabel={`${d.date.toDateString()}: ${d.seek} go here, ${d.avoid} stay out`}
+                      style={{
+                        width: cell,
+                        height: cell,
+                        borderRadius: 3,
+                        backgroundColor: d.future ? 'transparent' : heatColor(d),
+                        borderWidth: sel && sel.date.getTime() === d.date.getTime() ? 1.5 : 0,
+                        borderColor: Ink.primary,
+                      }}
+                    />
+                  ))}
+                </View>
+              ))}
+            </View>
+          </View>
+          <View style={s.heatLegend}>
+            <Text style={s.legendText}>Stay out</Text>
+            {[HEAT.avoid2, HEAT.avoid1, HEAT.even, HEAT.seek1, HEAT.seek2].map((c) => (
+              <View key={c} style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: c }} />
+            ))}
+            <Text style={s.legendText}>Go here</Text>
+          </View>
+        </>
+      )}
+    </View>
+  );
+}
+
 // Horizontal bars, one per place, value at the tip. Doubles as the table view:
 // every number the chart encodes is also printed.
 export function PlaceBars({ places }: { places: PlaceStat[] }) {
@@ -242,6 +354,9 @@ const s = StyleSheet.create({
   xTickBox: { position: 'absolute', top: 0, width: 60 },
   xTick: { color: Ink.muted, fontSize: 10 },
 
+  heatMonth: { position: 'absolute', top: 0, color: Ink.muted, fontSize: 10 },
+  heatDay: { color: Ink.muted, fontSize: 9 },
+  heatLegend: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 4, marginTop: 10 },
   placeHead: {
     flexDirection: 'row',
     alignItems: 'center',

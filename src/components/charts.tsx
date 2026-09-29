@@ -171,7 +171,16 @@ function heatColor(d: HeatDay): string {
 const GAP = 3;
 const DAY_LABEL_W = 18;
 
-export function Heatmap({ grid, idle }: { grid: HeatDay[][]; idle: string }) {
+export function Heatmap({
+  grid,
+  idle,
+  onSelect,
+}: {
+  grid: HeatDay[][];
+  idle: string;
+  // Called with the tapped day, or null when the selection is cleared.
+  onSelect?: (day: Date | null) => void;
+}) {
   const [width, setWidth] = useState(0);
   const [sel, setSel] = useState<HeatDay | null>(null);
   const weeks = grid.length;
@@ -231,7 +240,11 @@ export function Heatmap({ grid, idle }: { grid: HeatDay[][]; idle: string }) {
                     <Pressable
                       key={i}
                       disabled={d.future}
-                      onPress={() => setSel(sel && sel.date.getTime() === d.date.getTime() ? null : d)}
+                      onPress={() => {
+                        const next = sel && sel.date.getTime() === d.date.getTime() ? null : d;
+                        setSel(next);
+                        onSelect?.(next ? next.date : null);
+                      }}
                       accessibilityLabel={`${d.date.toDateString()}: ${d.seek} go here, ${d.avoid} stay out`}
                       style={{
                         width: cell,

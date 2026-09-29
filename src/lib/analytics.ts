@@ -148,7 +148,10 @@ export type DayScore = { wins: number; slips: number };
 export type LifeScore = {
   score: number; // 0-100
   band: 'Thriving' | 'On track' | 'Mixed' | 'Rough week';
-  delta: number | null; // vs the previous 7 days; null if that week was empty
+  // vs the previous window; null if either window is empty (an empty window
+  // is just the neutral 50, so a delta against it would mislead)
+  delta: number | null;
+  prevScore: number | null; // previous window's score; null if it was empty
   visits: number; // go-here visits
   skipped: number; // stay-out alerts answered "Skipping it"
   routines: number; // completed-routine credit (fractional)
@@ -192,16 +195,19 @@ export function dailyScores(log: LogEntry[], runs: RoutineRun[], fences: Fence[]
   return days;
 }
 
+// Score over the `days`-day window ending on `now`'s day (7 = the week card,
+// 1 = a single day), with delta vs the window just before it.
 export function lifeScore(
   log: LogEntry[],
   runs: RoutineRun[] = [],
   fences: Fence[] = [],
-  now = new Date()
+  now = new Date(),
+  days = 7
 ): LifeScore {
   const today = startOfDay(now);
-  const age = (ts: string) => Math.floor((today - startOfDay(new Date(ts))) / DAY_MS);
-  const thisWeek = (ts: string) => age(ts) >= 0 && age(ts) < 7;
-  const lastWeek = (ts: string) => age(ts) >= 7 && age(ts) < 14;
+  const age = (ts: string) => Math.round((today - startOfDay(new Date(ts))) / DAY_MS);
+  const thisWeek = (ts: string) => age(ts) >= 0 && age(ts) < days;
+  const lastWeek = (ts: string) => age(ts) >= days && age(ts) < 2 * days;
 
   let visits = 0,
     skipped = 0,
@@ -228,10 +234,12 @@ export function lifeScore(
 
   const wins = visits + skipped + routines;
   const score = scoreOf(wins, slips);
+  const prevScore = prevWins + prevSlips > 0 ? scoreOf(prevWins, prevSlips) : null;
   return {
     score,
     band: bandOf(score),
-    delta: prevWins + prevSlips > 0 ? score - scoreOf(prevWins, prevSlips) : null,
+    delta: prevScore !== null && wins + slips > 0 ? score - prevScore : null,
+    prevScore,
     visits,
     skipped,
     routines,

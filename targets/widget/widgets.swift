@@ -82,7 +82,8 @@ func dailyTallies(_ snap: Snapshot) -> [Date: Tally] {
 struct LifeScore {
     let score: Int
     let band: String
-    let delta: Int?
+    let delta: Int? // nil if either week is empty (mirrors analytics.ts)
+    let prevScore: Int?
 }
 
 func lifeScore(_ tallies: [Date: Tally], now: Date) -> LifeScore {
@@ -98,7 +99,9 @@ func lifeScore(_ tallies: [Date: Tally], now: Date) -> LifeScore {
     func score(_ t: Tally) -> Int { Int((100.0 * (t.wins + 1) / (t.wins + t.slips + 2)).rounded()) }
     let s = score(cur)
     let band = s >= 80 ? "Thriving" : s >= 60 ? "On track" : s >= 40 ? "Mixed" : "Rough week"
-    return LifeScore(score: s, band: band, delta: prev.wins + prev.slips > 0 ? s - score(prev) : nil)
+    let prevScore = prev.wins + prev.slips > 0 ? score(prev) : nil
+    let delta = prevScore.flatMap { p in cur.wins + cur.slips > 0 ? s - p : nil }
+    return LifeScore(score: s, band: band, delta: delta, prevScore: prevScore)
 }
 
 // MARK: - Timeline
@@ -202,7 +205,7 @@ struct SentryWidgetView: View {
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Palette.primary)
                         .lineLimit(1)
-                    Text(deltaText(life.delta))
+                    Text(deltaText(life))
                         .font(.system(size: 11))
                         .foregroundStyle(Palette.secondary)
                         .lineLimit(1)
@@ -217,8 +220,10 @@ struct SentryWidgetView: View {
         }
     }
 
-    func deltaText(_ d: Int?) -> String {
-        guard let d else { return "First week" }
+    func deltaText(_ life: LifeScore) -> String {
+        guard let d = life.delta else {
+            return life.prevScore.map { "Last week: \($0)" } ?? "First week"
+        }
         if d == 0 { return "Same as last week" }
         return "\(d > 0 ? "+" : "−")\(abs(d)) vs last week"
     }

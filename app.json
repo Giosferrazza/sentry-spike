@@ -7,10 +7,11 @@
     "icon": "./assets/images/icon.png",
     "scheme": "sentryspike",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": false,
+    "newArchEnabled": true,
     "ios": {
       "icon": "./assets/expo.icon",
       "bundleIdentifier": "com.giosferrazza.sentryspike",
+      "appleTeamId": "72TAPSBT32",
       "infoPlist": {
         "UIBackgroundModes": [
           "location",

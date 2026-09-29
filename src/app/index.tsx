@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  Keyboard,
   KeyboardAvoidingView,
   LayoutChangeEvent,
   PanResponder,
@@ -12,23 +13,28 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import MapView, { Circle, Marker, Polygon, Polyline, Region } from 'react-native-maps';
+import Slider from '@react-native-community/slider';
+import MapView, { Circle, Polygon, Polyline, Region } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { Button, Icon, IconButton, Segmented } from '@/components/ui';
 import { BottomTabInset } from '@/constants/theme';
+import { C, R, S, T } from '@/constants/ui';
 import {
   Fence,
   FenceKind,
   KIND_COLORS,
+  KIND_LABELS,
   loadFences,
   makeFence,
   MAX_FENCES,
+  MIN_RADIUS,
   saveFences,
 } from '@/lib/fences';
-import { areaSqMeters, LatLng, simplify } from '@/lib/geo';
-import { Place, searchPlaces } from '@/lib/search';
+import { areaSqMeters, circlePolygon, distanceMeters, LatLng, simplify } from '@/lib/geo';
+import { resolvePlace, suggest, Suggestion } from '@/lib/search';
 
-// Where the old hardcoded spike fence lived; used until we get a GPS fix.
+// Last resort when location is denied and there are no fences yet.
 const FALLBACK_REGION: Region = {
   latitude: 39.51822,
   longitude: -119.896584,
@@ -36,10 +42,27 @@ const FALLBACK_REGION: Region = {
   longitudeDelta: 0.02,
 };
 
+const START_SPAN = 0.012; // ~1.3 km across: a few blocks around you
+const LOCATE_TIMEOUT_MS = 2500;
+const RECENTER_IF_MOVED_M = 200;
+
 const MIN_AREA_M2 = 400;
+// Search-made fences start as a circle of this radius; the slider adjusts it.
+// The shape can be smaller than iOS's ~100 m trigger minimum: iOS still
+// watches a >= MIN_RADIUS circle (the dashed ring) and the log records
+// whether you were inside the actual shape.
+const DEFAULT_RADIUS = 60;
+const MIN_SHAPE_RADIUS = 25;
+const MAX_RADIUS = 1000;
+const SUGGEST_DEBOUNCE_MS = 120;
 const MIN_STROKE_PX = 6;
 
-type Draft = { polygon: LatLng[]; name: string; kind: FenceKind };
+// A lasso draft carries its polygon; a search draft is a circle whose
+// polygon is derived from center + radius so the slider can resize it.
+type Draft = { name: string; kind: FenceKind } & (
+  | { polygon: LatLng[]; circle?: undefined }
+  | { circle: { center: LatLng; radius: number }; polygon?: undefined }
+);
 
 export default function MapScreen() {
   const insets = useSafeAreaInsets();
@@ -48,33 +71,84 @@ export default function MapScreen() {
   const sizeRef = useRef({ width: 1, height: 1 });
 
   const [fences, setFences] = useState<Fence[]>([]);
+  // The map mounts once we know where to open it, so it never flashes
+  // somewhere else first.
+  const [startRegion, setStartRegion] = useState<Region | null>(null);
   const [drawing, setDrawing] = useState(false);
   const [stroke, setStroke] = useState<LatLng[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [nameEdit, setNameEdit] = useState('');
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<Place[] | null>(null);
+  const [results, setResults] = useState<Suggestion[] | null>(null);
   const [searching, setSearching] = useState(false);
-  const [pin, setPin] = useState<Place | null>(null);
+  const searchSeq = useRef(0);
+  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const selected = fences.find((f) => f.id === selectedId) ?? null;
   const draftFence = useMemo(
-    () => (draft ? makeFence(draft.polygon, draft.name, draft.kind) : null),
+    () =>
+      draft
+        ? makeFence(
+            draft.circle ? circlePolygon(draft.circle.center, draft.circle.radius) : draft.polygon,
+            draft.name,
+            draft.kind
+          )
+        : null,
     [draft]
   );
 
   useEffect(() => {
-    loadFences().then(setFences);
+    let opened: LatLng | null = null;
+    const open = (at: LatLng) => {
+      if (opened) return;
+      opened = at;
+      const region = {
+        latitude: at.latitude,
+        longitude: at.longitude,
+        latitudeDelta: START_SPAN,
+        longitudeDelta: START_SPAN,
+      };
+      regionRef.current = region;
+      setStartRegion(region);
+    };
+
+    const fencesLoaded = loadFences().then((f) => {
+      setFences(f);
+      return f;
+    });
+
+    // Never leave the map blank: fall back after a short wait.
+    const timer = setTimeout(async () => {
+      const f = await fencesLoaded;
+      open(f[0]?.center ?? FALLBACK_REGION);
+    }, LOCATE_TIMEOUT_MS);
+
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') return;
-      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      mapRef.current?.animateToRegion(
-        { ...pos.coords, latitudeDelta: 0.012, longitudeDelta: 0.012 },
-        500
+      if (status !== 'granted') {
+        const f = await fencesLoaded;
+        open(f[0]?.center ?? FALLBACK_REGION);
+        return;
+      }
+      // Instant: the phone's cached fix. Then refine with a fresh one.
+      const last = await Location.getLastKnownPositionAsync({ maxAge: 30 * 60_000 }).catch(() => null);
+      if (last) open(last.coords);
+      const fresh = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }).catch(
+        () => null
       );
+      if (!fresh) return;
+      if (!opened) {
+        open(fresh.coords);
+      } else if (distanceMeters(opened, fresh.coords) > RECENTER_IF_MOVED_M) {
+        mapRef.current?.animateToRegion(
+          { ...fresh.coords, latitudeDelta: START_SPAN, longitudeDelta: START_SPAN },
+          500
+        );
+      }
     })();
+
+    return () => clearTimeout(timer);
   }, []);
 
   const persist = useCallback(async (next: Fence[]) => {
@@ -112,7 +186,7 @@ export default function MapScreen() {
       return;
     }
     setSelectedId(null);
-    setDraft({ polygon, name: pin?.title ?? `Spot ${fences.length + 1}`, kind: 'avoid' });
+    setDraft({ polygon, name: `Spot ${fences.length + 1}`, kind: 'avoid' });
   };
 
   const pan = useMemo(
@@ -148,7 +222,6 @@ export default function MapScreen() {
     }
     const fence = { ...draftFence, name: draftFence.name.trim() || 'Untitled' };
     setDraft(null);
-    setPin(null);
     await persist([...fences, fence]);
   };
 
@@ -167,29 +240,61 @@ export default function MapScreen() {
     ]);
   };
 
-  const runSearch = async () => {
-    if (!query.trim()) return;
-    setSearching(true);
-    try {
-      setResults(await searchPlaces(query, regionRef.current));
-    } finally {
+  // Suggestions as you type. Each keystroke bumps searchSeq so a slow,
+  // stale response can't overwrite a newer one.
+  const onQuery = (q: string) => {
+    setQuery(q);
+    if (debounce.current) clearTimeout(debounce.current);
+    const seq = ++searchSeq.current;
+    if (!q.trim()) {
+      setResults(null);
       setSearching(false);
+      return;
     }
+    setSearching(true);
+    debounce.current = setTimeout(async () => {
+      const hits = await suggest(q, regionRef.current);
+      if (seq !== searchSeq.current) return;
+      setResults(hits);
+      setSearching(false);
+    }, SUGGEST_DEBOUNCE_MS);
   };
 
-  const pickPlace = (p: Place) => {
+  const pickSuggestion = async (s: Suggestion) => {
+    Keyboard.dismiss();
+    searchSeq.current++;
+    setSearching(true);
+    const place = await resolvePlace(s, regionRef.current);
+    setSearching(false);
+    if (!place) {
+      Alert.alert('Couldn’t find that place', 'Try another result or draw the fence by hand.');
+      return;
+    }
+    setQuery('');
     setResults(null);
-    setPin(p);
+    setSelectedId(null);
+    setDraft({
+      name: place.title,
+      kind: 'avoid',
+      circle: { center: { latitude: place.latitude, longitude: place.longitude }, radius: DEFAULT_RADIUS },
+    });
+    frameCircle(place, DEFAULT_RADIUS);
+  };
+
+  // Zoom so a circle of this radius fills roughly the middle third of the map.
+  const frameCircle = (center: LatLng, radius: number) => {
+    const span = (Math.max(radius, MIN_RADIUS) * 6) / 111_000;
     mapRef.current?.animateToRegion(
-      { latitude: p.latitude, longitude: p.longitude, latitudeDelta: 0.004, longitudeDelta: 0.004 },
+      { latitude: center.latitude, longitude: center.longitude, latitudeDelta: span, longitudeDelta: span },
       500
     );
   };
 
   const clearSearch = () => {
+    searchSeq.current++;
     setQuery('');
     setResults(null);
-    setPin(null);
+    setSearching(false);
   };
 
   const commitName = () => {
@@ -208,205 +313,275 @@ export default function MapScreen() {
 
   const recenter = async () => {
     const pos = await Location.getLastKnownPositionAsync();
-    if (pos) mapRef.current?.animateToRegion({ ...pos.coords, latitudeDelta: 0.012, longitudeDelta: 0.012 }, 400);
+    if (pos)
+      mapRef.current?.animateToRegion({ ...pos.coords, latitudeDelta: 0.012, longitudeDelta: 0.012 }, 400);
   };
 
-  const bottom = insets.bottom + BottomTabInset + 12;
+  const bottom = insets.bottom + BottomTabInset + S.md;
+  const idle = !drawing && !draft && !selected;
 
   return (
     <KeyboardAvoidingView style={styles.root} behavior="padding">
-      <MapView
-        ref={mapRef}
-        style={StyleSheet.absoluteFill}
-        initialRegion={FALLBACK_REGION}
-        onRegionChangeComplete={(r) => (regionRef.current = r)}
-        onLayout={(e: LayoutChangeEvent) => (sizeRef.current = e.nativeEvent.layout)}
-        showsUserLocation
-        rotateEnabled={false}
-        pitchEnabled={false}
-        userInterfaceStyle="dark">
-        {fences.map((f) => (
-          <React.Fragment key={f.id}>
-            <Circle
-              center={f.center}
-              radius={f.radius}
-              strokeColor={KIND_COLORS[f.kind] + '55'}
-              strokeWidth={1}
-              lineDashPattern={[6, 6]}
-              fillColor="transparent"
-            />
-            <Polygon
-              coordinates={f.polygon}
-              strokeColor={KIND_COLORS[f.kind]}
-              strokeWidth={f.id === selectedId ? 4 : 2}
-              fillColor={KIND_COLORS[f.kind] + (f.id === selectedId ? '55' : '33')}
-              tappable
-              onPress={() => {
-                setDraft(null);
-                setSelectedId(f.id);
-                setNameEdit(f.name);
-              }}
-            />
-          </React.Fragment>
-        ))}
+      {startRegion && (
+        <MapView
+          ref={mapRef}
+          style={StyleSheet.absoluteFill}
+          initialRegion={startRegion}
+          onRegionChangeComplete={(r) => (regionRef.current = r)}
+          onLayout={(e: LayoutChangeEvent) => (sizeRef.current = e.nativeEvent.layout)}
+          mapType="mutedStandard"
+          showsUserLocation
+          showsPointsOfInterests={false}
+          rotateEnabled={false}
+          pitchEnabled={false}
+          userInterfaceStyle="dark">
+          {fences.map((f) => (
+            <React.Fragment key={f.id}>
+              <Circle
+                center={f.center}
+                radius={f.radius}
+                strokeColor={KIND_COLORS[f.kind] + '55'}
+                strokeWidth={1}
+                lineDashPattern={[6, 6]}
+                fillColor="transparent"
+              />
+              <Polygon
+                coordinates={f.polygon}
+                strokeColor={KIND_COLORS[f.kind]}
+                strokeWidth={f.id === selectedId ? 4 : 2}
+                fillColor={KIND_COLORS[f.kind] + (f.id === selectedId ? '55' : '33')}
+                tappable
+                onPress={() => {
+                  setDraft(null);
+                  setSelectedId(f.id);
+                  setNameEdit(f.name);
+                }}
+              />
+            </React.Fragment>
+          ))}
 
-        {draftFence && (
-          <>
-            <Circle
-              center={draftFence.center}
-              radius={draftFence.radius}
-              strokeColor="#ffffff66"
-              strokeWidth={1}
-              lineDashPattern={[6, 6]}
-              fillColor="transparent"
-            />
-            <Polygon
-              coordinates={draftFence.polygon}
-              strokeColor={KIND_COLORS[draftFence.kind]}
-              strokeWidth={3}
-              fillColor={KIND_COLORS[draftFence.kind] + '44'}
-            />
-          </>
-        )}
+          {draftFence && (
+            <>
+              <Circle
+                center={draftFence.center}
+                radius={draftFence.radius}
+                strokeColor="#ffffff66"
+                strokeWidth={1}
+                lineDashPattern={[6, 6]}
+                fillColor="transparent"
+              />
+              <Polygon
+                coordinates={draftFence.polygon}
+                strokeColor={KIND_COLORS[draftFence.kind]}
+                strokeWidth={3}
+                fillColor={KIND_COLORS[draftFence.kind] + '44'}
+              />
+            </>
+          )}
 
-        {pin && <Marker coordinate={pin} title={pin.title} description={pin.subtitle} />}
-
-        {stroke.length > 1 && <Polyline coordinates={stroke} strokeColor="#ffffff" strokeWidth={4} />}
-      </MapView>
+          {stroke.length > 1 && <Polyline coordinates={stroke} strokeColor="#ffffff" strokeWidth={4} />}
+        </MapView>
+      )}
 
       {drawing && <View style={StyleSheet.absoluteFill} {...pan.panHandlers} />}
 
-      <View style={[styles.header, { top: insets.top + 8 }]} pointerEvents="box-none">
-        <View style={styles.pill}>
-          <Text style={styles.title}>Sentry</Text>
-          <Text style={styles.subtitle}>
-            {drawing
-              ? 'Draw a loop around the place'
-              : `${fences.length} fence${fences.length === 1 ? '' : 's'}`}
-          </Text>
-        </View>
-        {!drawing && (
-          <Pressable style={styles.roundBtn} onPress={recenter}>
-            <Text style={styles.roundBtnText}>◎</Text>
-          </Pressable>
-        )}
-      </View>
-
-      {!drawing && !draft && !selected && (
-        <View style={[styles.searchWrap, { top: insets.top + 80 }]} pointerEvents="box-none">
-          <View style={styles.searchBox}>
-            <TextInput
-              style={styles.searchInput}
-              value={query}
-              onChangeText={setQuery}
-              onSubmitEditing={runSearch}
-              placeholder="Search a place to fence"
-              placeholderTextColor="#5a6172"
-              returnKeyType="search"
-              autoCorrect={false}
-            />
-            {searching ? (
-              <ActivityIndicator color="#8b93a3" />
-            ) : query || pin ? (
-              <Pressable onPress={clearSearch} hitSlop={12}>
-                <Text style={styles.searchClear}>✕</Text>
-              </Pressable>
-            ) : null}
+      {/* Top: search + locate while idle; a hint while drawing. */}
+      <View style={[styles.top, { top: insets.top + S.sm }]} pointerEvents="box-none">
+        {drawing ? (
+          <View style={styles.hint}>
+            <Icon name="lasso" size={15} color={C.textSecondary} />
+            <Text style={T.caption}>Draw a loop around the place</Text>
           </View>
-          {results && (
-            <View style={styles.results}>
-              {results.length === 0 ? (
-                <Text style={styles.resultEmpty}>No places found</Text>
-              ) : (
-                results.map((r) => (
-                  <Pressable key={r.id} style={styles.result} onPress={() => pickPlace(r)}>
-                    <Text style={styles.resultTitle} numberOfLines={1}>
-                      {r.title}
-                    </Text>
-                    {r.subtitle ? (
-                      <Text style={styles.resultSub} numberOfLines={1}>
-                        {r.subtitle}
-                      </Text>
-                    ) : null}
+        ) : idle ? (
+          <>
+            <View style={styles.topRow}>
+              <View style={styles.search}>
+                <Icon name="magnifyingglass" size={16} color={C.textMuted} />
+                <TextInput
+                  style={styles.searchInput}
+                  value={query}
+                  onChangeText={onQuery}
+                  onSubmitEditing={() => results?.[0] && pickSuggestion(results[0])}
+                  placeholder="Search places"
+                  placeholderTextColor={C.textMuted}
+                  returnKeyType="search"
+                  autoCorrect={false}
+                />
+                {searching ? (
+                  <ActivityIndicator color={C.textSecondary} />
+                ) : query ? (
+                  <Pressable onPress={clearSearch} hitSlop={12} accessibilityLabel="Clear search">
+                    <Icon name="xmark.circle.fill" size={17} color={C.textMuted} weight="regular" />
                   </Pressable>
-                ))
-              )}
+                ) : null}
+              </View>
+              <IconButton name="location.fill" onPress={recenter} label="Center on me" />
             </View>
-          )}
-        </View>
-      )}
+
+            {results && (
+              <View style={styles.results}>
+                {results.length === 0 ? (
+                  <Text style={[T.caption, { padding: S.lg }]}>No places found</Text>
+                ) : (
+                  results.map((r, i) => (
+                    <Pressable
+                      key={`${r.title}|${r.subtitle}`}
+                      onPress={() => pickSuggestion(r)}
+                      style={({ pressed }) => [
+                        styles.result,
+                        i < results.length - 1 && styles.resultDivider,
+                        pressed && { backgroundColor: C.raised },
+                      ]}>
+                      <Icon name="mappin.circle.fill" size={20} color={C.textMuted} weight="regular" />
+                      <View style={{ flex: 1 }}>
+                        <Text style={T.label} numberOfLines={1}>
+                          {r.title}
+                        </Text>
+                        {r.subtitle ? (
+                          <Text style={[T.caption, { marginTop: 1 }]} numberOfLines={1}>
+                            {r.subtitle}
+                          </Text>
+                        ) : null}
+                      </View>
+                    </Pressable>
+                  ))
+                )}
+              </View>
+            )}
+          </>
+        ) : null}
+      </View>
 
       <View style={[styles.bottom, { paddingBottom: bottom }]} pointerEvents="box-none">
         {draftFence ? (
-          <View style={styles.sheet}>
-            <TextInput
-              style={styles.input}
-              value={draft!.name}
-              onChangeText={(name) => setDraft({ ...draft!, name })}
-              placeholder="Name this place"
-              placeholderTextColor="#5a6172"
-              selectTextOnFocus
-            />
-            <KindToggle value={draft!.kind} onChange={(kind) => setDraft({ ...draft!, kind })} />
-            <Text style={styles.meta}>{describe(draftFence)}</Text>
-            <View style={styles.row}>
-              <Pressable style={[styles.btn, styles.btnGhost]} onPress={() => setDraft(null)}>
-                <Text style={styles.btnGhostText}>Discard</Text>
-              </Pressable>
-              <Pressable style={[styles.btn, styles.btnPrimary]} onPress={saveDraft}>
-                <Text style={styles.btnText}>Save fence</Text>
-              </Pressable>
-            </View>
-          </View>
+          <FenceSheet
+            name={draft!.name}
+            onName={(name) => setDraft({ ...draft!, name })}
+            kind={draft!.kind}
+            onKind={(kind) => setDraft({ ...draft!, kind })}
+            meta={draft!.circle ? describeCircle(draftFence, draft!.circle.radius) : describe(draftFence)}
+            radius={draft!.circle?.radius}
+            onRadius={
+              draft!.circle
+                ? (radius) => setDraft({ ...draft!, circle: { ...draft!.circle!, radius } })
+                : undefined
+            }
+            autoFocus>
+            <Button label="Discard" variant="secondary" onPress={() => setDraft(null)} style={{ flex: 1 }} />
+            <Button label="Save fence" onPress={saveDraft} style={{ flex: 1 }} />
+          </FenceSheet>
         ) : selected ? (
-          <View style={styles.sheet}>
-            <TextInput
-              style={styles.input}
-              value={nameEdit}
-              onChangeText={setNameEdit}
-              onEndEditing={commitName}
-              placeholder="Name this place"
-              placeholderTextColor="#5a6172"
-              returnKeyType="done"
+          <FenceSheet
+            name={nameEdit}
+            onName={setNameEdit}
+            onNameDone={commitName}
+            kind={selected.kind}
+            onKind={setSelectedKind}
+            meta={describe(selected)}>
+            <Button
+              label="Delete"
+              icon="trash"
+              variant="danger"
+              onPress={deleteSelected}
+              style={{ flex: 1 }}
             />
-            <KindToggle value={selected.kind} onChange={setSelectedKind} />
-            <Text style={styles.meta}>{describe(selected)}</Text>
-            <View style={styles.row}>
-              <Pressable style={[styles.btn, styles.btnDanger]} onPress={deleteSelected}>
-                <Text style={styles.btnText}>Delete</Text>
-              </Pressable>
-              <Pressable style={[styles.btn, styles.btnGhost]} onPress={closeSelected}>
-                <Text style={styles.btnGhostText}>Done</Text>
-              </Pressable>
-            </View>
-          </View>
+            <Button label="Done" onPress={closeSelected} style={{ flex: 1 }} />
+          </FenceSheet>
         ) : (
-          <Pressable
-            style={[styles.btn, styles.fab, drawing ? styles.btnGhostSolid : styles.btnPrimary]}
-            onPress={() => setDrawing((d) => !d)}>
-            <Text style={styles.btnText}>{drawing ? 'Cancel' : '✎  Draw a fence'}</Text>
-          </Pressable>
+          <View style={styles.fabWrap} pointerEvents="box-none">
+            {drawing ? (
+              <Button
+                label="Cancel"
+                variant="secondary"
+                onPress={() => setDrawing(false)}
+                style={styles.fab}
+              />
+            ) : (
+              <Button label="Draw fence" icon="lasso" onPress={() => setDrawing(true)} style={styles.fab} />
+            )}
+          </View>
         )}
       </View>
     </KeyboardAvoidingView>
   );
 }
 
-function KindToggle({ value, onChange }: { value: FenceKind; onChange: (k: FenceKind) => void }) {
+function FenceSheet({
+  name,
+  onName,
+  onNameDone,
+  kind,
+  onKind,
+  meta,
+  radius,
+  onRadius,
+  autoFocus,
+  children,
+}: {
+  name: string;
+  onName: (s: string) => void;
+  onNameDone?: () => void;
+  kind: FenceKind;
+  onKind: (k: FenceKind) => void;
+  meta: string;
+  radius?: number;
+  onRadius?: (r: number) => void;
+  autoFocus?: boolean;
+  children: React.ReactNode;
+}) {
   return (
-    <View style={styles.seg}>
-      {(['avoid', 'seek'] as const).map((k) => (
-        <Pressable
-          key={k}
-          style={[styles.segBtn, value === k && { backgroundColor: KIND_COLORS[k] }]}
-          onPress={() => onChange(k)}>
-          <Text style={[styles.segText, value === k && styles.segTextOn]}>
-            {k === 'avoid' ? 'Stay out' : 'Go here'}
-          </Text>
-        </Pressable>
-      ))}
+    <View style={styles.sheet}>
+      <View style={styles.grabber} />
+      <TextInput
+        style={styles.nameInput}
+        value={name}
+        onChangeText={onName}
+        onEndEditing={onNameDone}
+        placeholder="Name this place"
+        placeholderTextColor={C.textMuted}
+        returnKeyType="done"
+        selectTextOnFocus={autoFocus}
+      />
+      <Segmented
+        options={[
+          { key: 'avoid', label: KIND_LABELS.avoid },
+          { key: 'seek', label: KIND_LABELS.seek },
+        ]}
+        value={kind}
+        onChange={onKind}
+        colors={KIND_COLORS}
+      />
+      {radius !== undefined && onRadius ? (
+        <View>
+          <View style={styles.radiusHead}>
+            <Text style={T.caption}>Radius</Text>
+            <Text style={styles.radiusValue}>{radius} m</Text>
+          </View>
+          <Slider
+            value={radius}
+            minimumValue={MIN_SHAPE_RADIUS}
+            maximumValue={MAX_RADIUS}
+            step={5}
+            onValueChange={onRadius}
+            minimumTrackTintColor={C.text}
+            maximumTrackTintColor={C.line}
+            thumbTintColor={C.text}
+          />
+        </View>
+      ) : null}
+      <View style={styles.meta}>
+        <Icon name="circle.dashed" size={13} color={C.textMuted} weight="regular" />
+        <Text style={T.caption}>{meta}</Text>
+      </View>
+      <View style={styles.actions}>{children}</View>
     </View>
   );
+}
+
+function describeCircle(f: Fence, radius: number): string {
+  return radius < MIN_RADIUS
+    ? `Alerts start at the dashed ${f.radius} m ring (iOS minimum)`
+    : 'Drag to resize, or draw your own shape';
 }
 
 function describe(f: Fence): string {
@@ -415,91 +590,73 @@ function describe(f: Fence): string {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#0f1115' },
-  header: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  pill: {
+  root: { flex: 1, backgroundColor: C.bg },
+
+  top: { position: 'absolute', left: S.lg, right: S.lg, gap: S.sm },
+  topRow: { flexDirection: 'row', alignItems: 'center', gap: S.sm },
+  search: {
     flex: 1,
-    backgroundColor: 'rgba(22,25,34,0.94)',
-    borderColor: '#262b38',
-    borderWidth: 1,
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-  },
-  title: { color: '#f3f5f8', fontSize: 18, fontWeight: '800' },
-  subtitle: { color: '#8b93a3', fontSize: 13, marginTop: 1 },
-  roundBtn: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: 'rgba(22,25,34,0.94)',
-    borderColor: '#262b38',
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  roundBtnText: { color: '#f3f5f8', fontSize: 22 },
-  bottom: { position: 'absolute', left: 16, right: 16, bottom: 0 },
-  searchWrap: { position: 'absolute', left: 16, right: 16, gap: 8 },
-  searchBox: {
+    height: 44,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    backgroundColor: 'rgba(22,25,34,0.94)',
-    borderColor: '#262b38',
-    borderWidth: 1,
-    borderRadius: 14,
-    paddingHorizontal: 14,
+    gap: S.sm,
+    paddingHorizontal: S.md,
+    borderRadius: R.pill,
+    backgroundColor: C.glass,
+    borderColor: C.line,
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  searchInput: { flex: 1, color: '#f3f5f8', fontSize: 16, paddingVertical: 12 },
-  searchClear: { color: '#8b93a3', fontSize: 16 },
+  searchInput: { flex: 1, color: C.text, fontSize: 16, height: '100%' },
   results: {
-    backgroundColor: '#161922',
-    borderColor: '#262b38',
-    borderWidth: 1,
-    borderRadius: 14,
+    backgroundColor: C.surface,
+    borderRadius: R.lg,
+    borderColor: C.line,
+    borderWidth: StyleSheet.hairlineWidth,
     overflow: 'hidden',
   },
-  result: { paddingHorizontal: 14, paddingVertical: 11, borderBottomColor: '#262b38', borderBottomWidth: StyleSheet.hairlineWidth },
-  resultTitle: { color: '#f3f5f8', fontSize: 15, fontWeight: '600' },
-  resultSub: { color: '#8b93a3', fontSize: 12, marginTop: 2 },
-  resultEmpty: { color: '#8b93a3', fontSize: 14, padding: 14 },
+  result: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: S.md,
+    paddingHorizontal: S.lg,
+    paddingVertical: S.md,
+  },
+  resultDivider: { borderBottomColor: C.line, borderBottomWidth: StyleSheet.hairlineWidth },
+  hint: {
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: S.sm,
+    paddingHorizontal: S.lg,
+    height: 36,
+    borderRadius: R.pill,
+    backgroundColor: C.glass,
+  },
+
+  bottom: { position: 'absolute', left: S.lg, right: S.lg, bottom: 0 },
+  fabWrap: { alignItems: 'center' },
+  fab: { borderRadius: R.pill, paddingHorizontal: S.xxl },
+
   sheet: {
-    backgroundColor: '#161922',
-    borderColor: '#262b38',
-    borderWidth: 1,
-    borderRadius: 18,
-    padding: 16,
-    gap: 12,
+    backgroundColor: C.surface,
+    borderRadius: R.lg,
+    borderColor: C.line,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: S.lg,
+    paddingTop: S.sm,
+    gap: S.md,
   },
-  input: {
-    color: '#f3f5f8',
-    fontSize: 18,
-    fontWeight: '700',
-    backgroundColor: '#1d212c',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+  grabber: {
+    alignSelf: 'center',
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: C.line,
+    marginBottom: S.xs,
   },
-  meta: { color: '#8b93a3', fontSize: 13 },
-  seg: { flexDirection: 'row', backgroundColor: '#1d212c', borderRadius: 10, padding: 3, gap: 3 },
-  segBtn: { flex: 1, paddingVertical: 9, borderRadius: 8, alignItems: 'center' },
-  segText: { color: '#8b93a3', fontWeight: '600', fontSize: 14 },
-  segTextOn: { color: '#fff' },
-  row: { flexDirection: 'row', gap: 10 },
-  btn: { flex: 1, paddingVertical: 14, borderRadius: 12, alignItems: 'center' },
-  fab: { flex: 0 },
-  btnPrimary: { backgroundColor: '#5b7fff' },
-  btnDanger: { backgroundColor: '#e0564f' },
-  btnGhost: { borderWidth: 1, borderColor: '#262b38' },
-  btnGhostSolid: { backgroundColor: '#1d212c', borderWidth: 1, borderColor: '#262b38' },
-  btnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
-  btnGhostText: { color: '#8b93a3', fontWeight: '600', fontSize: 16 },
+  nameInput: { color: C.text, fontSize: 22, fontWeight: '700', paddingVertical: S.xs },
+  meta: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  radiusHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
+  radiusValue: { color: C.text, fontSize: 15, fontWeight: '600', fontVariant: ['tabular-nums'] },
+  actions: { flexDirection: 'row', gap: S.sm, marginTop: S.xs },
 });

@@ -6,6 +6,7 @@
     "@bacons/apple-targets": "^5.0.0",
     "@expo/ui": "~56.0.26",
     "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native-community/slider": "5.2.0",
     "expo": "~56.0.22",
     "expo-constants": "~56.0.18",
     "expo-device": "~56.0.4",

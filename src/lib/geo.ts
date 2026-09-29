@@ -137,3 +137,12 @@ export function areaSqMeters(poly: LatLng[]): number {
   }
   return Math.abs(sum / 2);
 }
+
+// A circle as a polygon, for fences made from a search result + radius.
+export function circlePolygon(center: LatLng, radiusMeters: number, sides = 48): LatLng[] {
+  const proj = projector(center);
+  return Array.from({ length: sides }, (_, i) => {
+    const a = (i / sides) * 2 * Math.PI;
+    return proj.from({ x: radiusMeters * Math.cos(a), y: radiusMeters * Math.sin(a) });
+  });
+}

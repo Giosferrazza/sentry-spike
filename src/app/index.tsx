@@ -1,6 +1,7 @@
 import * as Location from 'expo-location';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   LayoutChangeEvent,
@@ -11,7 +12,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import MapView, { Circle, Polygon, Polyline, Region } from 'react-native-maps';
+import MapView, { Circle, Marker, Polygon, Polyline, Region } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomTabInset } from '@/constants/theme';
@@ -25,6 +26,7 @@ import {
   saveFences,
 } from '@/lib/fences';
 import { areaSqMeters, LatLng, simplify } from '@/lib/geo';
+import { Place, searchPlaces } from '@/lib/search';
 
 // Where the old hardcoded spike fence lived; used until we get a GPS fix.
 const FALLBACK_REGION: Region = {
@@ -50,6 +52,11 @@ export default function MapScreen() {
   const [stroke, setStroke] = useState<LatLng[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [nameEdit, setNameEdit] = useState('');
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<Place[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [pin, setPin] = useState<Place | null>(null);
 
   const selected = fences.find((f) => f.id === selectedId) ?? null;
   const draftFence = useMemo(
@@ -105,7 +112,7 @@ export default function MapScreen() {
       return;
     }
     setSelectedId(null);
-    setDraft({ polygon, name: `Spot ${fences.length + 1}`, kind: 'avoid' });
+    setDraft({ polygon, name: pin?.title ?? `Spot ${fences.length + 1}`, kind: 'avoid' });
   };
 
   const pan = useMemo(
@@ -141,6 +148,7 @@ export default function MapScreen() {
     }
     const fence = { ...draftFence, name: draftFence.name.trim() || 'Untitled' };
     setDraft(null);
+    setPin(null);
     await persist([...fences, fence]);
   };
 
@@ -157,6 +165,42 @@ export default function MapScreen() {
         },
       },
     ]);
+  };
+
+  const runSearch = async () => {
+    if (!query.trim()) return;
+    setSearching(true);
+    try {
+      setResults(await searchPlaces(query, regionRef.current));
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const pickPlace = (p: Place) => {
+    setResults(null);
+    setPin(p);
+    mapRef.current?.animateToRegion(
+      { latitude: p.latitude, longitude: p.longitude, latitudeDelta: 0.004, longitudeDelta: 0.004 },
+      500
+    );
+  };
+
+  const clearSearch = () => {
+    setQuery('');
+    setResults(null);
+    setPin(null);
+  };
+
+  const commitName = () => {
+    const name = nameEdit.trim();
+    if (!selected || !name || name === selected.name) return;
+    persist(fences.map((f) => (f.id === selected.id ? { ...f, name } : f)));
+  };
+
+  const closeSelected = () => {
+    commitName();
+    setSelectedId(null);
   };
 
   const setSelectedKind = (kind: FenceKind) =>
@@ -200,6 +244,7 @@ export default function MapScreen() {
               onPress={() => {
                 setDraft(null);
                 setSelectedId(f.id);
+                setNameEdit(f.name);
               }}
             />
           </React.Fragment>
@@ -224,6 +269,8 @@ export default function MapScreen() {
           </>
         )}
 
+        {pin && <Marker coordinate={pin} title={pin.title} description={pin.subtitle} />}
+
         {stroke.length > 1 && <Polyline coordinates={stroke} strokeColor="#ffffff" strokeWidth={4} />}
       </MapView>
 
@@ -244,6 +291,50 @@ export default function MapScreen() {
           </Pressable>
         )}
       </View>
+
+      {!drawing && !draft && !selected && (
+        <View style={[styles.searchWrap, { top: insets.top + 80 }]} pointerEvents="box-none">
+          <View style={styles.searchBox}>
+            <TextInput
+              style={styles.searchInput}
+              value={query}
+              onChangeText={setQuery}
+              onSubmitEditing={runSearch}
+              placeholder="Search a place to fence"
+              placeholderTextColor="#5a6172"
+              returnKeyType="search"
+              autoCorrect={false}
+            />
+            {searching ? (
+              <ActivityIndicator color="#8b93a3" />
+            ) : query || pin ? (
+              <Pressable onPress={clearSearch} hitSlop={12}>
+                <Text style={styles.searchClear}>✕</Text>
+              </Pressable>
+            ) : null}
+          </View>
+          {results && (
+            <View style={styles.results}>
+              {results.length === 0 ? (
+                <Text style={styles.resultEmpty}>No places found</Text>
+              ) : (
+                results.map((r) => (
+                  <Pressable key={r.id} style={styles.result} onPress={() => pickPlace(r)}>
+                    <Text style={styles.resultTitle} numberOfLines={1}>
+                      {r.title}
+                    </Text>
+                    {r.subtitle ? (
+                      <Text style={styles.resultSub} numberOfLines={1}>
+                        {r.subtitle}
+                      </Text>
+                    ) : null}
+                  </Pressable>
+                ))
+              )}
+            </View>
+          )}
+        </View>
+      )}
 
       <View style={[styles.bottom, { paddingBottom: bottom }]} pointerEvents="box-none">
         {draftFence ? (
@@ -269,14 +360,22 @@ export default function MapScreen() {
           </View>
         ) : selected ? (
           <View style={styles.sheet}>
-            <Text style={styles.sheetTitle}>{selected.name}</Text>
+            <TextInput
+              style={styles.input}
+              value={nameEdit}
+              onChangeText={setNameEdit}
+              onEndEditing={commitName}
+              placeholder="Name this place"
+              placeholderTextColor="#5a6172"
+              returnKeyType="done"
+            />
             <KindToggle value={selected.kind} onChange={setSelectedKind} />
             <Text style={styles.meta}>{describe(selected)}</Text>
             <View style={styles.row}>
               <Pressable style={[styles.btn, styles.btnDanger]} onPress={deleteSelected}>
                 <Text style={styles.btnText}>Delete</Text>
               </Pressable>
-              <Pressable style={[styles.btn, styles.btnGhost]} onPress={() => setSelectedId(null)}>
+              <Pressable style={[styles.btn, styles.btnGhost]} onPress={closeSelected}>
                 <Text style={styles.btnGhostText}>Done</Text>
               </Pressable>
             </View>
@@ -348,6 +447,30 @@ const styles = StyleSheet.create({
   },
   roundBtnText: { color: '#f3f5f8', fontSize: 22 },
   bottom: { position: 'absolute', left: 16, right: 16, bottom: 0 },
+  searchWrap: { position: 'absolute', left: 16, right: 16, gap: 8 },
+  searchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: 'rgba(22,25,34,0.94)',
+    borderColor: '#262b38',
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+  },
+  searchInput: { flex: 1, color: '#f3f5f8', fontSize: 16, paddingVertical: 12 },
+  searchClear: { color: '#8b93a3', fontSize: 16 },
+  results: {
+    backgroundColor: '#161922',
+    borderColor: '#262b38',
+    borderWidth: 1,
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+  result: { paddingHorizontal: 14, paddingVertical: 11, borderBottomColor: '#262b38', borderBottomWidth: StyleSheet.hairlineWidth },
+  resultTitle: { color: '#f3f5f8', fontSize: 15, fontWeight: '600' },
+  resultSub: { color: '#8b93a3', fontSize: 12, marginTop: 2 },
+  resultEmpty: { color: '#8b93a3', fontSize: 14, padding: 14 },
   sheet: {
     backgroundColor: '#161922',
     borderColor: '#262b38',
@@ -356,7 +479,6 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 12,
   },
-  sheetTitle: { color: '#f3f5f8', fontSize: 18, fontWeight: '700' },
   input: {
     color: '#f3f5f8',
     fontSize: 18,

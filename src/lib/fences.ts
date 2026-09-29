@@ -6,6 +6,7 @@ import { Vibration } from 'react-native';
 
 import { distanceMeters, enclosingCircle, LatLng, pointInPolygon } from './geo';
 import { decideEnter, Presence } from './presence';
+import { Habit, startRun } from './routines';
 import { syncWidget } from './widget';
 
 export type FenceKind = 'avoid' | 'seek';
@@ -20,6 +21,8 @@ export type Fence = {
   center: LatLng;
   radius: number;
   createdAt: string;
+  // Ordered checklist shown on arrival (go-here fences only).
+  habits?: Habit[];
 };
 
 export type LogEntry = {
@@ -186,10 +189,10 @@ async function currentPosition(): Promise<LatLng | null> {
   }
 }
 
-export async function buzz(title: string, body: string): Promise<void> {
+export async function buzz(title: string, body: string, data?: Record<string, string>): Promise<void> {
   Vibration.vibrate([0, 400, 200, 400]);
   await Notifications.scheduleNotificationAsync({
-    content: { title, body, sound: true },
+    content: { title, body, sound: true, data },
     trigger: null,
   });
 }
@@ -232,6 +235,13 @@ TaskManager.defineTask(GEOFENCE_TASK, async ({ data, error }: { data: any; error
   // circle fires before you're actually inside the shape.
   if (fence.kind === 'avoid') {
     await buzz(`Hey — you wanted to skip ${fence.name}.`, "There's food at home. Want to pause for a second?");
+  } else if (fence.habits?.length) {
+    // Tapping opens the checklist (see useNotificationLinks in the root layout).
+    await startRun(fence.id, now);
+    const n = fence.habits.length;
+    await buzz(`${fence.name} routine`, `${n} ${n === 1 ? 'step' : 'steps'}, starting with ${fence.habits[0].title}.`, {
+      url: `/routine/${fence.id}`,
+    });
   } else {
     await buzz(`You made it to ${fence.name}.`, 'Nice. That counts.');
   }

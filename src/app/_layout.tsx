@@ -1,10 +1,9 @@
 import * as Notifications from 'expo-notifications';
-import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
-import { useEffect } from 'react';
-import { useColorScheme } from 'react-native';
+import { DarkTheme, router, Stack, ThemeProvider } from 'expo-router';
+import { useEffect, useRef } from 'react';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
-import AppTabs from '@/components/app-tabs';
+import { C } from '@/constants/ui';
 // Also registers the background geofence task at module scope.
 import { migrateRegions, refreshWidget } from '@/lib/fences';
 
@@ -18,17 +17,40 @@ Notifications.setNotificationHandler({
   }),
 });
 
-export default function TabLayout() {
-  const colorScheme = useColorScheme();
+// Every screen is dark-styled regardless of the system theme.
+const theme = { ...DarkTheme, colors: { ...DarkTheme.colors, background: C.bg, card: C.bg } };
+
+export default function RootLayout() {
   // Seed the widget on launch (first install, or after a midnight rollover).
   useEffect(() => {
     migrateRegions().catch(() => {});
     refreshWidget();
   }, []);
+
+  useNotificationLinks();
+
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+    <ThemeProvider value={theme}>
       <AnimatedSplashOverlay />
-      <AppTabs />
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: C.bg } }}>
+        <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="routine/[id]" options={{ presentation: 'modal' }} />
+      </Stack>
     </ThemeProvider>
   );
+}
+
+// Tapping a notification that carries `data.url` (e.g. a routine) opens that
+// screen, including when the tap launched the app from scratch.
+function useNotificationLinks() {
+  const response = Notifications.useLastNotificationResponse();
+  const handled = useRef<string | null>(null);
+  useEffect(() => {
+    if (!response || response.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) return;
+    const id = response.notification.request.identifier;
+    const url = response.notification.request.content.data?.url;
+    if (handled.current === id || typeof url !== 'string') return;
+    handled.current = id;
+    router.push(url as never);
+  }, [response]);
 }

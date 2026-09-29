@@ -14,13 +14,13 @@ export default function AppTabs() {
       tintColor={colors.text}
       labelStyle={{ default: { color: colors.textSecondary }, selected: { color: colors.text } }}>
       <NativeTabs.Trigger name="index">
-        <NativeTabs.Trigger.Label>Map</NativeTabs.Trigger.Label>
-        <NativeTabs.Trigger.Icon sf="map" />
-      </NativeTabs.Trigger>
-
-      <NativeTabs.Trigger name="insights">
         <NativeTabs.Trigger.Label>Insights</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon sf="chart.bar" />
+      </NativeTabs.Trigger>
+
+      <NativeTabs.Trigger name="map">
+        <NativeTabs.Trigger.Label>Map</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf="map" />
       </NativeTabs.Trigger>
 
       <NativeTabs.Trigger name="monitor">

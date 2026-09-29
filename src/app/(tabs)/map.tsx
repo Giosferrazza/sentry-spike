@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native';
 import Slider from '@react-native-community/slider';
+import { router, useFocusEffect } from 'expo-router';
 import MapView, { Circle, Polygon, Polyline, Region } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -150,6 +151,14 @@ export default function MapScreen() {
 
     return () => clearTimeout(timer);
   }, []);
+
+  // Other screens (routine editor) change fences too; reload on return so a
+  // later save here can't overwrite their edits with a stale copy.
+  useFocusEffect(
+    useCallback(() => {
+      loadFences().then(setFences);
+    }, [])
+  );
 
   const persist = useCallback(async (next: Fence[]) => {
     setFences(next);
@@ -477,7 +486,18 @@ export default function MapScreen() {
             onNameDone={commitName}
             kind={selected.kind}
             onKind={setSelectedKind}
-            meta={describe(selected)}>
+            meta={describe(selected)}
+            routine={
+              selected.kind === 'seek'
+                ? {
+                    count: selected.habits?.length ?? 0,
+                    onPress: () => {
+                      commitName();
+                      router.push(`/routine/${selected.id}`);
+                    },
+                  }
+                : undefined
+            }>
             <Button
               label="Delete"
               icon="trash"
@@ -516,6 +536,7 @@ function FenceSheet({
   radius,
   onRadius,
   autoFocus,
+  routine,
   children,
 }: {
   name: string;
@@ -527,6 +548,8 @@ function FenceSheet({
   radius?: number;
   onRadius?: (r: number) => void;
   autoFocus?: boolean;
+  // Go-here fences link to their arrival routine.
+  routine?: { count: number; onPress: () => void };
   children: React.ReactNode;
 }) {
   return (
@@ -573,6 +596,22 @@ function FenceSheet({
         <Icon name="circle.dashed" size={13} color={C.textMuted} weight="regular" />
         <Text style={T.caption}>{meta}</Text>
       </View>
+      {routine ? (
+        <Pressable
+          onPress={routine.onPress}
+          style={({ pressed }) => [styles.routineRow, pressed && { backgroundColor: C.line }]}>
+          <Icon name="checklist" size={17} color={C.text} />
+          <View style={{ flex: 1 }}>
+            <Text style={T.label}>Arrival routine</Text>
+            <Text style={T.caption}>
+              {routine.count
+                ? `${routine.count} ${routine.count === 1 ? 'habit' : 'habits'} when you arrive`
+                : 'Add habits to do when you arrive'}
+            </Text>
+          </View>
+          <Icon name="chevron.right" size={14} color={C.textMuted} />
+        </Pressable>
+      ) : null}
       <View style={styles.actions}>{children}</View>
     </View>
   );
@@ -656,6 +695,14 @@ const styles = StyleSheet.create({
   },
   nameInput: { color: C.text, fontSize: 22, fontWeight: '700', paddingVertical: S.xs },
   meta: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  routineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: S.md,
+    padding: S.md,
+    borderRadius: R.md,
+    backgroundColor: C.raised,
+  },
   radiusHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
   radiusValue: { color: C.text, fontSize: 15, fontWeight: '600', fontVariant: ['tabular-nums'] },
   actions: { flexDirection: 'row', gap: S.sm, marginTop: S.xs },

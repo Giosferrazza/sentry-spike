@@ -6,7 +6,7 @@ import { useColorScheme } from 'react-native';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import AppTabs from '@/components/app-tabs';
 // Also registers the background geofence task at module scope.
-import { refreshWidget } from '@/lib/fences';
+import { migrateRegions, refreshWidget } from '@/lib/fences';
 
 // Show nudges as banners even while the app is open.
 Notifications.setNotificationHandler({
@@ -22,6 +22,7 @@ export default function TabLayout() {
   const colorScheme = useColorScheme();
   // Seed the widget on launch (first install, or after a midnight rollover).
   useEffect(() => {
+    migrateRegions().catch(() => {});
     refreshWidget();
   }, []);
   return (

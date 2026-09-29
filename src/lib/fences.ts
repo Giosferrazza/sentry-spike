@@ -4,7 +4,8 @@ import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 import { Vibration } from 'react-native';
 
-import { enclosingCircle, LatLng, pointInPolygon } from './geo';
+import { distanceMeters, enclosingCircle, LatLng, pointInPolygon } from './geo';
+import { decideEnter, Presence } from './presence';
 import { syncWidget } from './widget';
 
 export type FenceKind = 'avoid' | 'seek';
@@ -37,6 +38,7 @@ export const MAX_FENCES = 20; // hard iOS limit on monitored regions per app
 
 const FENCES_KEY = 'sentry-fences';
 const LOG_KEY = 'sentry-entry-log';
+const PRESENCE_KEY = 'sentry-presence';
 
 // Orange/blue, validated for color-vision deficiency on the dark surface
 // (the old red/green pair failed: deutan ΔE 7.6).
@@ -91,10 +93,46 @@ async function appendLog(entry: LogEntry): Promise<void> {
   await refreshWidget();
 }
 
+// Regions registered before exit events existed never report exits, so
+// presence tracking can't work for them. Re-register once with the current
+// settings; the re-report of fences you're inside is absorbed by presence.
+const REGIONS_VERSION_KEY = 'sentry-regions-version';
+const REGIONS_VERSION = '2';
+
+export async function migrateRegions(): Promise<void> {
+  if ((await AsyncStorage.getItem(REGIONS_VERSION_KEY)) === REGIONS_VERSION) return;
+  if (await isMonitoring()) await startMonitoring(await loadFences());
+  await AsyncStorage.setItem(REGIONS_VERSION_KEY, REGIONS_VERSION);
+}
+
 // Push the current state to the home screen widget.
 export async function refreshWidget(): Promise<void> {
   const [log, fences, monitoring] = await Promise.all([loadLog(), loadFences(), isMonitoring()]);
   syncWidget(log, fences, monitoring);
+}
+
+// Mark fences you're standing in right now as "inside" before (re)starting
+// monitoring, so iOS's immediate re-report of them isn't logged as an arrival
+// (e.g. drawing a fence around home while at home).
+async function seedPresence(fences: Fence[]): Promise<void> {
+  const pos = await currentPosition();
+  if (!pos) return;
+  const presence = await loadPresence();
+  const now = new Date().toISOString();
+  for (const f of fences) {
+    const inside = distanceMeters(pos, f.center) <= f.radius;
+    if (inside && !presence[f.id]?.inside) presence[f.id] = { inside: true, since: now };
+  }
+  await savePresence(presence);
+}
+
+async function loadPresence(): Promise<Presence> {
+  const raw = await AsyncStorage.getItem(PRESENCE_KEY);
+  return raw ? JSON.parse(raw) : {};
+}
+
+async function savePresence(p: Presence): Promise<void> {
+  await AsyncStorage.setItem(PRESENCE_KEY, JSON.stringify(p));
 }
 
 export async function isMonitoring(): Promise<boolean> {
@@ -108,6 +146,7 @@ export async function startMonitoring(fences: Fence[]): Promise<void> {
     await stopMonitoring();
     return;
   }
+  await seedPresence(fences);
   await Location.startGeofencingAsync(
     GEOFENCE_TASK,
     fences.slice(0, MAX_FENCES).map((f) => ({
@@ -116,7 +155,9 @@ export async function startMonitoring(fences: Fence[]): Promise<void> {
       longitude: f.center.longitude,
       radius: f.radius,
       notifyOnEnter: true,
-      notifyOnExit: false,
+      // Exits let us tell a real arrival from iOS re-reporting a fence
+      // you never left (see presence.ts).
+      notifyOnExit: true,
     }))
   );
   await refreshWidget();
@@ -162,11 +203,29 @@ TaskManager.defineTask(GEOFENCE_TASK, async ({ data, error }: { data: any; error
     console.log('Geofence task error:', error);
     return;
   }
-  if (!data || data.eventType !== Location.GeofencingEventType.Enter) return;
+  if (!data) return;
+  const id: string | undefined = data.region?.identifier;
+  if (!id) return;
+
+  const presence = await loadPresence();
+  const now = new Date();
+
+  if (data.eventType === Location.GeofencingEventType.Exit) {
+    presence[id] = { inside: false, since: now.toISOString() };
+    await savePresence(presence);
+    return;
+  }
+  if (data.eventType !== Location.GeofencingEventType.Enter) return;
 
   const fences = await loadFences();
-  const fence = fences.find((f) => f.id === data.region?.identifier);
+  const fence = fences.find((f) => f.id === id);
   if (!fence) return;
+
+  const lastEntry = (await loadLog()).find((e) => e.fenceId === id)?.ts ?? null;
+  const decision = decideEnter(presence, id, lastEntry, now);
+  presence[id] = { inside: true, since: presence[id]?.inside ? presence[id].since : now.toISOString() };
+  await savePresence(presence);
+  if (decision !== 'arrival') return;
 
   // Buzz on the circle entry regardless: a missed nudge is worse than an early
   // one for this test. The polygon check is logged so we can see how often the

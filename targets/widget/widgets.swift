@@ -12,9 +12,16 @@ struct Snapshot: Codable {
         let kind: String // "avoid" | "seek"
         let name: String
     }
+    // Visits per local day; t = local midnight, epoch ms.
+    struct DayCount: Codable {
+        let t: Double
+        let s: Int
+        let a: Int
+    }
     let monitoring: Bool
     let fenceCount: Int
     let entries: [Entry] // newest first, last ~8 days
+    let days: [DayCount]? // last ~16 weeks; absent in snapshots from older app builds
 
     static func load() -> Snapshot? {
         guard let json = UserDefaults(suiteName: appGroup)?.string(forKey: "snapshot"),
@@ -24,42 +31,58 @@ struct Snapshot: Codable {
 
     // Shown in the widget gallery before the app has synced real data.
     static let sample: Snapshot = {
-        let now = Date().timeIntervalSince1970 * 1000
-        var entries: [Entry] = []
-        for i in 0..<12 {
-            let ts: Double = now - Double(i) * 50_000_000
-            let seek: Bool = i % 4 == 0
-            entries.append(Entry(ts: ts, kind: seek ? "seek" : "avoid", name: seek ? "Gym" : "Taco Bell"))
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        var days: [DayCount] = []
+        for back in 0..<100 {
+            let seed = (back * 7 + 3) % 11
+            if seed < 4 { continue }
+            let t = cal.date(byAdding: .day, value: -back, to: today)!.timeIntervalSince1970 * 1000
+            days.append(DayCount(t: t, s: seed % 3, a: seed % 4 == 0 ? 2 : seed % 2))
         }
-        return Snapshot(monitoring: true, fenceCount: 4, entries: entries)
+        let last = Entry(ts: Date().addingTimeInterval(-3_600).timeIntervalSince1970 * 1000, kind: "seek", name: "Gym")
+        return Snapshot(monitoring: true, fenceCount: 4, entries: [last], days: days)
     }()
 }
 
-struct Day {
-    let label: String
-    let isToday: Bool
-    var avoid = 0
+struct Tally {
     var seek = 0
-    var total: Int { avoid + seek }
+    var avoid = 0
+    var total: Int { seek + avoid }
 }
 
-// Buckets are computed at render time so the chart rolls over at midnight
-// even if the app hasn't run.
-func lastSevenDays(_ snap: Snapshot, now: Date) -> [Day] {
+func dailyTallies(_ snap: Snapshot) -> [Date: Tally] {
+    var out: [Date: Tally] = [:]
+    let cal = Calendar.current
+    for d in snap.days ?? [] {
+        let day = cal.startOfDay(for: Date(timeIntervalSince1970: d.t / 1000))
+        out[day, default: Tally()].seek += d.s
+        out[day, default: Tally()].avoid += d.a
+    }
+    return out
+}
+
+// MARK: - Life score (mirrors lifeScore() in src/lib/analytics.ts)
+
+struct LifeScore {
+    let score: Int
+    let band: String
+    let delta: Int?
+}
+
+func lifeScore(_ tallies: [Date: Tally], now: Date) -> LifeScore {
     let cal = Calendar.current
     let today = cal.startOfDay(for: now)
-    let fmt = DateFormatter()
-    fmt.dateFormat = "EEEEE" // M T W T F S S
-    var days = (0..<7).reversed().map { back -> Day in
-        let d = cal.date(byAdding: .day, value: -back, to: today)!
-        return Day(label: fmt.string(from: d), isToday: back == 0)
+    var cur = Tally(), prev = Tally()
+    for (day, t) in tallies {
+        guard let age = cal.dateComponents([.day], from: day, to: today).day else { continue }
+        if age >= 0 && age < 7 { cur.seek += t.seek; cur.avoid += t.avoid }
+        else if age >= 7 && age < 14 { prev.seek += t.seek; prev.avoid += t.avoid }
     }
-    for e in snap.entries {
-        let day = cal.startOfDay(for: Date(timeIntervalSince1970: e.ts / 1000))
-        guard let back = cal.dateComponents([.day], from: day, to: today).day, back >= 0, back < 7 else { continue }
-        if e.kind == "seek" { days[6 - back].seek += 1 } else { days[6 - back].avoid += 1 }
-    }
-    return days
+    func score(_ t: Tally) -> Int { Int((100.0 * Double(t.seek + 1) / Double(t.total + 2)).rounded()) }
+    let s = score(cur)
+    let band = s >= 80 ? "Thriving" : s >= 60 ? "On track" : s >= 40 ? "Mixed" : "Rough week"
+    return LifeScore(score: s, band: band, delta: prev.total > 0 ? s - score(prev) : nil)
 }
 
 // MARK: - Timeline
@@ -75,15 +98,14 @@ struct Provider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (SentryEntry) -> Void) {
-        // Widget gallery preview: show sample data if the app hasn't synced yet.
         completion(SentryEntry(date: Date(), snapshot: Snapshot.load() ?? .sample))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<SentryEntry>) -> Void) {
         let now = Date()
         let snap = Snapshot.load()
-        // Re-render at midnight so the 7-day window shifts; the app also
-        // reloads the widget whenever the log or fences change.
+        // Re-render at midnight so the score window and heatmap shift; the app
+        // also reloads the widget whenever the log or fences change.
         let midnight = Calendar.current.nextDate(
             after: now, matching: DateComponents(hour: 0, minute: 0), matchingPolicy: .nextTime
         ) ?? now.addingTimeInterval(3600)
@@ -97,12 +119,27 @@ struct Provider: TimelineProvider {
 // MARK: - View
 
 enum Palette {
-    static let avoid = Color(red: 0xd9 / 255, green: 0x59 / 255, blue: 0x26 / 255)
-    static let seek = Color(red: 0x39 / 255, green: 0x87 / 255, blue: 0xe5 / 255)
-    static let primary = Color(red: 0xf3 / 255, green: 0xf5 / 255, blue: 0xf8 / 255)
-    static let secondary = Color(red: 0x8b / 255, green: 0x93 / 255, blue: 0xa3 / 255)
-    static let muted = Color(red: 0x5a / 255, green: 0x61 / 255, blue: 0x72 / 255)
-    static let grid = Color(red: 0x26 / 255, green: 0x2b / 255, blue: 0x38 / 255)
+    static func hex(_ v: UInt32) -> Color {
+        Color(red: Double((v >> 16) & 0xff) / 255, green: Double((v >> 8) & 0xff) / 255, blue: Double(v & 0xff) / 255)
+    }
+    static let avoid = hex(0xd95926)
+    static let seek = hex(0x3987e5)
+    static let primary = hex(0xf3f5f8)
+    static let secondary = hex(0x8b93a3)
+    static let muted = hex(0x5a6172)
+    static let track = hex(0x1d212c)
+    // Heatmap steps, same as HEAT in src/components/charts.tsx.
+    static let seek1 = hex(0x275083)
+    static let even = hex(0x454b5a)
+    static let avoid1 = hex(0x773924)
+}
+
+func heatColor(_ t: Tally?) -> Color {
+    guard let t, t.total > 0 else { return Palette.track }
+    let net = t.seek - t.avoid
+    if net == 0 { return Palette.even }
+    if net > 0 { return net >= 2 ? Palette.seek : Palette.seek1 }
+    return -net >= 2 ? Palette.avoid : Palette.avoid1
 }
 
 struct SentryWidgetView: View {
@@ -118,7 +155,7 @@ struct SentryWidgetView: View {
                 Text("Open Sentry to start")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Palette.primary)
-                Text("Draw a fence and your week shows up here.")
+                Text("Draw a fence and your Life Score shows up here.")
                     .font(.system(size: 13))
                     .foregroundStyle(Palette.secondary)
             }
@@ -128,41 +165,46 @@ struct SentryWidgetView: View {
 
     @ViewBuilder
     func content(_ snap: Snapshot) -> some View {
-        let days = lastSevenDays(snap, now: entry.date)
-        let avoid = days.reduce(0) { $0 + $1.avoid }
-        let seek = days.reduce(0) { $0 + $1.seek }
+        let tallies = dailyTallies(snap)
+        let life = lifeScore(tallies, now: entry.date)
 
         VStack(alignment: .leading, spacing: 0) {
             header(monitoring: snap.monitoring, fenceCount: snap.fenceCount)
-                .padding(.bottom, 6)
+                .padding(.bottom, 8)
 
-            HStack(alignment: .bottom, spacing: 16) {
-                // Left: this week's headline
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("\(avoid + seek)")
-                        .font(.system(size: 40, weight: .bold, design: .rounded))
+            HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("LIFE SCORE")
+                        .font(.system(size: 9, weight: .semibold))
+                        .tracking(0.8)
+                        .foregroundStyle(Palette.muted)
+                    Text("\(life.score)")
+                        .font(.system(size: 42, weight: .bold, design: .rounded))
                         .foregroundStyle(Palette.primary)
                         .contentTransition(.numericText())
-                    Text("entries · 7 days")
-                        .font(.system(size: 12))
+                    Text(life.band)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Palette.primary)
+                        .lineLimit(1)
+                    Text(deltaText(life.delta))
+                        .font(.system(size: 11))
                         .foregroundStyle(Palette.secondary)
-                    HStack(spacing: 10) {
-                        legend(Palette.avoid, "\(avoid) stay out")
-                        legend(Palette.seek, "\(seek) go")
-                    }
-                    .padding(.top, 6)
+                        .lineLimit(1)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(width: 96, alignment: .leading)
 
-                // Right: 7-day stacked columns
-                WeekChart(days: days)
-                    .frame(maxWidth: .infinity)
+                HeatGrid(tallies: tallies, now: entry.date)
             }
 
             Spacer(minLength: 6)
-
             lastLine(snap)
         }
+    }
+
+    func deltaText(_ d: Int?) -> String {
+        guard let d else { return "First week" }
+        if d == 0 { return "Same as last week" }
+        return "\(d > 0 ? "+" : "−")\(abs(d)) vs last week"
     }
 
     func header(monitoring: Bool, fenceCount: Int) -> some View {
@@ -178,16 +220,6 @@ struct SentryWidgetView: View {
             Text(monitoring ? "Watching \(fenceCount)" : "Paused")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(Palette.secondary)
-        }
-    }
-
-    func legend(_ color: Color, _ text: String) -> some View {
-        HStack(spacing: 4) {
-            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 8, height: 8)
-            Text(text)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Palette.secondary)
-                .lineLimit(1)
         }
     }
 
@@ -211,57 +243,42 @@ struct SentryWidgetView: View {
                     .lineLimit(1)
             }
         } else {
-            Text("No entries yet")
+            Text("No visits this week")
                 .font(.system(size: 12))
                 .foregroundStyle(Palette.muted)
         }
     }
 }
 
-struct WeekChart: View {
-    let days: [Day]
-    private let plotHeight: CGFloat = 58
+// As many weeks as fit, newest column on the right, rows Sun..Sat.
+struct HeatGrid: View {
+    let tallies: [Date: Tally]
+    let now: Date
+    private let gap: CGFloat = 2.5
 
     var body: some View {
-        let peak = max(1, days.map(\.total).max() ?? 1)
-        HStack(alignment: .bottom, spacing: 0) {
-            ForEach(Array(days.enumerated()), id: \.offset) { _, day in
-                VStack(spacing: 4) {
-                    column(day, peak: peak)
-                        .frame(height: plotHeight, alignment: .bottom)
-                    Text(day.label)
-                        .font(.system(size: 10, weight: day.isToday ? .bold : .regular))
-                        .foregroundStyle(day.isToday ? Palette.primary : Palette.muted)
-                }
-                .frame(maxWidth: .infinity)
-            }
-        }
-        .overlay(alignment: .bottom) {
-            // Baseline hairline, sitting under the columns above the labels.
-            Rectangle().fill(Palette.grid).frame(height: 1).padding(.bottom, 16)
-        }
-    }
+        GeometryReader { geo in
+            let cell = floor((geo.size.height - gap * 6) / 7)
+            let weeks = max(1, min(16, Int((geo.size.width + gap) / (cell + gap))))
+            let cal = Calendar.current
+            let today = cal.startOfDay(for: now)
+            let weekday = cal.component(.weekday, from: today) - 1 // 0 = Sunday
+            let start = cal.date(byAdding: .day, value: -weekday - (weeks - 1) * 7, to: today)!
 
-    // Stay out stacked on top of go here, 2pt surface gap, rounded top only.
-    @ViewBuilder
-    func column(_ day: Day, peak: Int) -> some View {
-        let unit = plotHeight / CGFloat(peak)
-        VStack(spacing: day.avoid > 0 && day.seek > 0 ? 2 : 0) {
-            if day.avoid > 0 {
-                UnevenRoundedRectangle(topLeadingRadius: 3, topTrailingRadius: 3)
-                    .fill(Palette.avoid)
-                    .frame(height: max(3, CGFloat(day.avoid) * unit - (day.seek > 0 ? 2 : 0)))
+            HStack(spacing: gap) {
+                ForEach(0..<weeks, id: \.self) { w in
+                    VStack(spacing: gap) {
+                        ForEach(0..<7, id: \.self) { d in
+                            let day = cal.date(byAdding: .day, value: w * 7 + d, to: start)!
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(day > today ? Color.clear : heatColor(tallies[day]))
+                                .frame(width: cell, height: cell)
+                        }
+                    }
+                }
             }
-            if day.seek > 0 {
-                UnevenRoundedRectangle(
-                    topLeadingRadius: day.avoid > 0 ? 0 : 3,
-                    topTrailingRadius: day.avoid > 0 ? 0 : 3
-                )
-                .fill(Palette.seek)
-                .frame(height: max(3, CGFloat(day.seek) * unit))
-            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .frame(width: 12)
     }
 }
 
@@ -278,7 +295,7 @@ struct SentryWidget: Widget {
                 }
         }
         .configurationDisplayName("Sentry")
-        .description("Your week of fence entries at a glance.")
+        .description("Your Life Score and visit history at a glance.")
         .supportedFamilies([.systemMedium])
     }
 }

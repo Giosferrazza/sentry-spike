@@ -18,6 +18,11 @@ export default function AppTabs() {
         <NativeTabs.Trigger.Icon sf="chart.bar" />
       </NativeTabs.Trigger>
 
+      <NativeTabs.Trigger name="routines">
+        <NativeTabs.Trigger.Label>Routines</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf="checklist" />
+      </NativeTabs.Trigger>
+
       <NativeTabs.Trigger name="map">
         <NativeTabs.Trigger.Label>Map</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon sf="map" />

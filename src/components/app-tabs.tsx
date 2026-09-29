@@ -14,8 +14,8 @@ export default function AppTabs() {
       tintColor={colors.text}
       labelStyle={{ default: { color: colors.textSecondary }, selected: { color: colors.text } }}>
       <NativeTabs.Trigger name="index">
-        <NativeTabs.Trigger.Label>Insights</NativeTabs.Trigger.Label>
-        <NativeTabs.Trigger.Icon sf="chart.bar" />
+        <NativeTabs.Trigger.Label>Home</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf="house" />
       </NativeTabs.Trigger>
 
       <NativeTabs.Trigger name="routines">

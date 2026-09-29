@@ -19,7 +19,8 @@
         ],
         "NSLocationWhenInUseUsageDescription": "Sentry checks when you arrive at a location you set, so it can nudge you to pause.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Sentry needs Always access so it can detect arrivals even when the app is in the background.",
-        "NSLocationAlwaysUsageDescription": "Sentry needs Always access so it can detect arrivals even when the app is in the background."
+        "NSLocationAlwaysUsageDescription": "Sentry needs Always access so it can detect arrivals even when the app is in the background.",
+        "CFBundleDisplayName": "Sentry"
       },
       "entitlements": {
         "com.apple.security.application-groups": [

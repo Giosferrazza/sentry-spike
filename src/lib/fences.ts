@@ -33,6 +33,8 @@ export type LogEntry = {
   // Was the phone inside the drawn shape (not just the circle) when iOS fired?
   // null = couldn't get a position fix.
   insidePolygon: boolean | null;
+  // Made with Monitor's Test > "Arrive at …", not a real geofence event.
+  simulated?: boolean;
 };
 
 export const GEOFENCE_TASK = 'sentry-geofence-task';
@@ -230,6 +232,13 @@ TaskManager.defineTask(GEOFENCE_TASK, async ({ data, error }: { data: any; error
   await savePresence(presence);
   if (decision !== 'arrival') return;
 
+  const pos = await currentPosition();
+  await handleArrival(fence, now, pos ? pointInPolygon(pos, fence.polygon) : null);
+});
+
+// What a real arrival does: nudge (or open a routine), then log it. Shared
+// by the geofence task and Monitor's "Arrive at …" test.
+async function handleArrival(fence: Fence, now: Date, insidePolygon: boolean | null, simulated = false) {
   // Buzz on the circle entry regardless: a missed nudge is worse than an early
   // one for this test. The polygon check is logged so we can see how often the
   // circle fires before you're actually inside the shape.
@@ -246,12 +255,18 @@ TaskManager.defineTask(GEOFENCE_TASK, async ({ data, error }: { data: any; error
     await buzz(`You made it to ${fence.name}.`, 'Nice. That counts.');
   }
 
-  const pos = await currentPosition();
   await appendLog({
-    ts: new Date().toISOString(),
+    ts: now.toISOString(),
     fenceId: fence.id,
     name: fence.name,
     kind: fence.kind,
-    insidePolygon: pos ? pointInPolygon(pos, fence.polygon) : null,
+    insidePolygon,
+    ...(simulated ? { simulated: true } : {}),
   });
-});
+}
+
+// Test hook: act as if you just arrived at this fence. Skips the presence
+// check on purpose so it always counts.
+export async function simulateArrival(fence: Fence): Promise<void> {
+  await handleArrival(fence, new Date(), true, true);
+}

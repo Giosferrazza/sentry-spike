@@ -2,7 +2,7 @@ import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
 import { useFocusEffect } from 'expo-router';
 import React, { useCallback, useState } from 'react';
-import { Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActionSheetIOS, Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Button, Card, Dot, Icon, Row, Screen } from '@/components/ui';
 import { C, S, T } from '@/constants/ui';
@@ -15,6 +15,7 @@ import {
   loadFences,
   loadLog,
   LogEntry,
+  simulateArrival,
   startMonitoring,
   stopMonitoring,
 } from '@/lib/fences';
@@ -86,6 +87,30 @@ export default function MonitorScreen() {
       },
     ]);
 
+  // Test menu: a plain notification, or a full simulated arrival at a fence
+  // (buzz + log entry + routine), so counts and the Life Score move.
+  const openTest = () => {
+    const options = ['Test notification', ...fences.map((f) => `Arrive at ${f.name}`), 'Cancel'];
+    ActionSheetIOS.showActionSheetWithOptions(
+      {
+        options,
+        cancelButtonIndex: options.length - 1,
+        title: 'Test',
+        message: fences.length
+          ? 'Arrivals are logged like real ones, tagged “test”. Clear the log to remove them.'
+          : 'Draw a fence on the Map to simulate arriving there.',
+      },
+      async (i) => {
+        if (i === 0) {
+          await buzz('Test buzz', 'If you feel/see this, notifications work.');
+        } else if (i > 0 && i <= fences.length) {
+          await simulateArrival(fences[i - 1]);
+          refresh();
+        }
+      }
+    );
+  };
+
   const always = permission === 'granted';
   const shown = log.slice(0, LOG_PREVIEW);
 
@@ -126,7 +151,7 @@ export default function MonitorScreen() {
           label="Test"
           icon="bell"
           variant="secondary"
-          onPress={() => buzz('Test buzz', 'If you feel/see this, notifications work.')}
+          onPress={openTest}
         />
       </View>
 
@@ -153,7 +178,9 @@ export default function MonitorScreen() {
               title={e.name ?? (e as any).region}
               subtitle={when(e.ts)}
               trailing={
-                e.insidePolygon === false ? (
+                e.simulated ? (
+                  <Text style={styles.testTag}>test</Text>
+                ) : e.insidePolygon === false ? (
                   <Text style={T.caption}>circle only</Text>
                 ) : e.insidePolygon === true ? (
                   <Icon name="checkmark" size={13} color={C.textMuted} />
@@ -187,5 +214,15 @@ function when(ts: string): string {
 const styles = StyleSheet.create({
   actions: { flexDirection: 'row', gap: S.sm },
   link: { color: C.text, fontSize: 15, fontWeight: '600' },
+  testTag: {
+    color: C.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    overflow: 'hidden',
+    backgroundColor: C.raised,
+  },
   note: { color: C.textMuted, lineHeight: 18, paddingHorizontal: S.xs },
 });

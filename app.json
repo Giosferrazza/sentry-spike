@@ -25,6 +25,9 @@
         "com.apple.security.application-groups": [
           "group.com.giosferrazza.sentryspike"
         ]
+      },
+      "config": {
+        "usesNonExemptEncryption": false
       }
     },
     "android": {

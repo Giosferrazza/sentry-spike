@@ -4,8 +4,10 @@
 #   scripts/testflight.sh             # regenerate ios/, archive, upload
 #   scripts/testflight.sh --no-upload # stop after exporting the .ipa
 #
-# Needs: a paid Apple Developer Program team set as ios.appleTeamId in
-# app.json (or TEAM_ID=... in the env), Xcode signed in to that team
+# Needs: an active (paid, unexpired) Apple Developer Program team set as
+# ios.appleTeamId in app.json (or TEAM_ID=... in the env). An expired
+# membership signs like a free team and the archive fails on the App Group
+# entitlement. Xcode must be signed in to that team
 # (Xcode > Settings > Accounts), and the app created in App Store Connect
 # with bundle ID com.giosferrazza.sentryspike.
 set -euo pipefail
@@ -16,18 +18,14 @@ OUT="$ROOT/build/testflight"
 UPLOAD=1
 [[ "${1:-}" == "--no-upload" ]] && UPLOAD=0
 
-# The free Personal Team this project started on; it can't upload.
-PERSONAL_TEAM=72TAPSBT32
-
 json() { node -p "require('./app.json').expo.$1 ?? ''"; }
 TEAM_ID=${TEAM_ID:-$(json ios.appleTeamId)}
 VERSION=$(json version)
 # Build numbers must increase with every upload; a timestamp always does.
 BUILD=$(date +%y%m%d%H%M)
 
-if [[ -z "$TEAM_ID" || "$TEAM_ID" == "$PERSONAL_TEAM" ]]; then
-  echo "✖ Team '$TEAM_ID' is the free Personal Team, which can't upload to TestFlight."
-  echo "  Set ios.appleTeamId in app.json to your paid team ID (developer.apple.com > Membership)."
+if [[ -z "$TEAM_ID" ]]; then
+  echo "✖ No team. Set ios.appleTeamId in app.json (developer.apple.com > Membership)."
   exit 1
 fi
 

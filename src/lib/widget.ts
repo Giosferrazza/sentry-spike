@@ -1,10 +1,12 @@
 import { ExtensionStorage } from '@bacons/apple-targets';
+import * as Application from 'expo-application';
 import { Platform } from 'react-native';
 
 import type { Fence, LogEntry } from './fences';
 
-// Must match appGroup in targets/widget/widgets.swift and app.json.
-const APP_GROUP = 'group.com.giosferrazza.sentryspike';
+// "group.<bundle id>", so Sentry and Sentry Dev each get their own (see
+// app.config.js). The widget derives the same value from its bundle ID.
+const APP_GROUP = `group.${Application.applicationId ?? 'com.giosferrazza.sentryspike'}`;
 const DAY_MS = 86_400_000;
 const ENTRY_WINDOW_MS = 8 * DAY_MS; // for the "Last: …" line
 // Daily tallies for the heatmap (15 weeks) and the score (this + last week).

@@ -3,8 +3,14 @@ import SwiftUI
 
 // MARK: - Shared data
 
-// Must match APP_GROUP in src/lib/widget.ts.
-let appGroup = "group.com.giosferrazza.sentryspike"
+// "group.<app bundle id>", matching APP_GROUP in src/lib/widget.ts. The
+// widget's own ID is "<app bundle id>.widget", so this works for both the
+// Sentry and Sentry Dev variants.
+let appGroup: String = {
+    let id = Bundle.main.bundleIdentifier ?? "com.giosferrazza.sentryspike.widget"
+    let app = id.hasSuffix(".widget") ? String(id.dropLast(".widget".count)) : id
+    return "group.\(app)"
+}()
 
 struct Snapshot: Codable {
     struct Entry: Codable {

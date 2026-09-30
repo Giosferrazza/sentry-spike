@@ -2,10 +2,11 @@ import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
 import { router, useFocusEffect } from 'expo-router';
 import React, { useCallback, useState } from 'react';
-import { ActionSheetIOS, Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActionSheetIOS, Alert, Linking, Pressable, Share, StyleSheet, Text, View } from 'react-native';
 
 import { Button, Card, Dot, Icon, Row, Screen } from '@/components/ui';
 import { C, S, T } from '@/constants/ui';
+import { exportData, importData } from '@/lib/backup';
 import { resetOnboarding } from '@/lib/onboarding';
 import { loadSampleHistory } from '@/lib/sample-data';
 import {
@@ -99,7 +100,42 @@ export default function MonitorScreen() {
   // (buzz + log entry + routine), so counts and the Life Score move.
   const openTest = () => {
     const sample = __DEV__ ? ['Load sample history', 'Replay onboarding'] : [];
-    const options = ['Test notification', ...fences.map((f) => `Arrive at ${f.name}`), ...sample, 'Cancel'];
+    const actions: [string, () => Promise<void>][] = [
+      ['Test notification', () => buzz('Test buzz', 'If you feel/see this, notifications work.')],
+      ...fences.map((f): [string, () => Promise<void>] => [
+        `Arrive at ${f.name}`,
+        async () => {
+          await simulateArrival(f);
+          refresh();
+        },
+      ]),
+      ...(sample.length
+        ? ([
+            [
+              'Load sample history',
+              async () => {
+                const { entries, runs } = await loadSampleHistory();
+                Alert.alert(
+                  'Sample history loaded',
+                  `${entries} visits${runs ? ` and ${runs} routine runs` : ''} over the last 17 weeks.`
+                );
+                refresh();
+              },
+            ],
+            [
+              'Replay onboarding',
+              async () => {
+                await resetOnboarding();
+                router.push('/onboarding');
+              },
+            ],
+          ] as [string, () => Promise<void>][])
+        : []),
+      // Move data between Sentry Dev and Sentry: export in one, import in the other.
+      ['Export data', async () => void (await Share.share({ message: await exportData() }))],
+      ['Import data', async () => promptImport()],
+    ];
+    const options = [...actions.map(([label]) => label), 'Cancel'];
     ActionSheetIOS.showActionSheetWithOptions(
       {
         options,
@@ -109,24 +145,33 @@ export default function MonitorScreen() {
           ? 'Arrivals are logged like real ones, tagged “test”. Clear the log to remove them.'
           : 'Draw a fence on the Map to simulate arriving there.',
       },
-      async (i) => {
-        if (i === 0) {
-          await buzz('Test buzz', 'If you feel/see this, notifications work.');
-        } else if (i > 0 && i <= fences.length) {
-          await simulateArrival(fences[i - 1]);
-          refresh();
-        } else if (sample.length && i === fences.length + 1) {
-          const { entries, runs } = await loadSampleHistory();
-          Alert.alert(
-            'Sample history loaded',
-            `${entries} visits${runs ? ` and ${runs} routine runs` : ''} over the last 17 weeks.`
-          );
-          refresh();
-        } else if (sample.length && i === fences.length + 2) {
-          await resetOnboarding();
-          router.push('/onboarding');
-        }
+      (i) => {
+        actions[i]?.[1]().catch((e) => Alert.alert('Failed', String(e?.message ?? e)));
       }
+    );
+  };
+
+  const promptImport = () => {
+    Alert.prompt(
+      'Import data',
+      'Paste a backup from Export data. This replaces the fences, visits, and name in this app.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Import',
+          style: 'destructive',
+          onPress: async (text?: string) => {
+            try {
+              const n = await importData(text ?? '');
+              Alert.alert('Imported', `${n} items restored.`);
+              refresh();
+            } catch (e: any) {
+              Alert.alert('Import failed', String(e?.message ?? e));
+            }
+          },
+        },
+      ],
+      'plain-text'
     );
   };
 

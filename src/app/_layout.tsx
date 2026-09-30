@@ -6,6 +6,7 @@ import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { C } from '@/constants/ui';
 // Also registers the background geofence task at module scope.
 import { migrateRegions, refreshWidget } from '@/lib/fences';
+import { needsOnboarding } from '@/lib/onboarding';
 
 // Show nudges as banners even while the app is open.
 Notifications.setNotificationHandler({
@@ -25,6 +26,7 @@ export default function RootLayout() {
   useEffect(() => {
     migrateRegions().catch(() => {});
     refreshWidget();
+    needsOnboarding().then((yes) => yes && router.push('/onboarding'));
   }, []);
 
   useNotificationLinks();
@@ -35,6 +37,10 @@ export default function RootLayout() {
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: C.bg } }}>
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="routine/[id]" options={{ presentation: 'modal' }} />
+        <Stack.Screen
+          name="onboarding"
+          options={{ presentation: 'fullScreenModal', gestureEnabled: false, animation: 'fade' }}
+        />
       </Stack>
     </ThemeProvider>
   );

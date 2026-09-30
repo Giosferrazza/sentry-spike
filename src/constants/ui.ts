@@ -14,6 +14,7 @@ export const C = {
   action: '#f3f5f8',
   onAction: '#0f1115',
   danger: '#e5484d',
+  streak: '#f5a524',
   // Floating controls over the map.
   glass: 'rgba(22,25,34,0.92)',
 } as const;

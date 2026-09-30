@@ -1,11 +1,12 @@
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import React, { useCallback, useState } from 'react';
 import { ActionSheetIOS, Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Button, Card, Dot, Icon, Row, Screen } from '@/components/ui';
 import { C, S, T } from '@/constants/ui';
+import { resetOnboarding } from '@/lib/onboarding';
 import { loadSampleHistory } from '@/lib/sample-data';
 import {
   buzz,
@@ -22,6 +23,12 @@ import {
 } from '@/lib/fences';
 
 const LOG_PREVIEW = 30;
+const OUTCOME_TAGS: Record<NonNullable<LogEntry['outcome']>, string> = {
+  skipped: 'skipped',
+  went: 'went in',
+  here: 'here for it',
+  passing: 'just passing',
+};
 
 export default function MonitorScreen() {
   const [monitoring, setMonitoring] = useState(false);
@@ -91,7 +98,7 @@ export default function MonitorScreen() {
   // Test menu: a plain notification, or a full simulated arrival at a fence
   // (buzz + log entry + routine), so counts and the Life Score move.
   const openTest = () => {
-    const sample = __DEV__ ? ['Load sample history'] : [];
+    const sample = __DEV__ ? ['Load sample history', 'Replay onboarding'] : [];
     const options = ['Test notification', ...fences.map((f) => `Arrive at ${f.name}`), ...sample, 'Cancel'];
     ActionSheetIOS.showActionSheetWithOptions(
       {
@@ -115,6 +122,9 @@ export default function MonitorScreen() {
             `${entries} visits${runs ? ` and ${runs} routine runs` : ''} over the last 17 weeks.`
           );
           refresh();
+        } else if (sample.length && i === fences.length + 2) {
+          await resetOnboarding();
+          router.push('/onboarding');
         }
       }
     );
@@ -188,7 +198,7 @@ export default function MonitorScreen() {
               subtitle={when(e.ts)}
               trailing={
                 e.outcome ? (
-                  <Text style={styles.testTag}>{e.outcome === 'skipped' ? 'skipped' : 'went in'}</Text>
+                  <Text style={styles.testTag}>{OUTCOME_TAGS[e.outcome]}</Text>
                 ) : e.simulated ? (
                   <Text style={styles.testTag}>test</Text>
                 ) : e.insidePolygon === false ? (

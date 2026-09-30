@@ -127,6 +127,19 @@ export function pointInPolygon(p: LatLng, poly: LatLng[]): boolean {
   return inside;
 }
 
+// Inside the shape, or within `slackMeters` of its edge (GPS fixes wobble,
+// so a fix just outside the line usually means you're at the edge).
+export function nearPolygon(p: LatLng, poly: LatLng[], slackMeters: number): boolean {
+  if (pointInPolygon(p, poly)) return true;
+  const proj = projector(p);
+  const xy = poly.map(proj.to);
+  const o = { x: 0, y: 0 };
+  for (let i = 0, j = xy.length - 1; i < xy.length; j = i++) {
+    if (segDist(o, xy[j], xy[i]) <= slackMeters) return true;
+  }
+  return false;
+}
+
 export function areaSqMeters(poly: LatLng[]): number {
   if (poly.length < 3) return 0;
   const proj = projector(poly[0]);

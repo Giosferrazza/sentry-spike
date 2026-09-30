@@ -33,6 +33,10 @@ const zero = (): KindCounts => ({ avoid: 0, seek: 0 });
 // Entries from the old single-fence spike have no kind; skip them.
 const valid = (log: LogEntry[]) => log.filter((e) => e.kind === 'avoid' || e.kind === 'seek');
 
+// Go-here visits answered "Just passing" are neither a win nor a slip.
+const passing = (e: LogEntry) => e.kind === 'seek' && e.outcome === 'passing';
+const isWin = (e: LogEntry) => (e.kind === 'seek' && !passing(e)) || e.outcome === 'skipped';
+
 function startOfDay(d: Date): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
@@ -126,6 +130,30 @@ export function byPlace(log: LogEntry[], fences: Fence[]): PlaceStat[] {
   return [...map.values()].sort((a, b) => b.entries - a.entries || a.name.localeCompare(b.name));
 }
 
+// Per-place streak.
+// Go-here: visits since you last answered "Just passing"; every visit is +1.
+// Stay-out: full days since the last slip (a "Skipping it" answer isn't one),
+// or since the fence was made if you've never slipped.
+export function placeStreak(
+  log: LogEntry[],
+  fenceId: string,
+  kind: FenceKind,
+  createdAt: string | null,
+  now = new Date()
+): number {
+  const today = startOfDay(now);
+  const mine = valid(log).filter((e) => e.fenceId === fenceId);
+  if (kind === 'seek') {
+    // Log is newest first.
+    const i = mine.findIndex(passing);
+    return i < 0 ? mine.length : i;
+  }
+  const slips = mine.filter((e) => e.outcome !== 'skipped').map((e) => e.ts);
+  const from = slips.length ? slips.reduce((a, b) => (a > b ? a : b)) : createdAt;
+  if (!from) return 0;
+  return Math.max(0, Math.round((today - startOfDay(new Date(from))) / DAY_MS));
+}
+
 // Clean axis max for small integer counts: 1, 2, 4, 5, 10, 20, 25, 50...
 export function niceMax(n: number): number {
   if (n <= 1) return 1;
@@ -187,7 +215,8 @@ export function dailyScores(log: LogEntry[], runs: RoutineRun[], fences: Fence[]
     return d;
   };
   for (const e of valid(log)) {
-    if (e.kind === 'seek' || e.outcome === 'skipped') at(e.ts).wins++;
+    if (passing(e)) continue;
+    if (isWin(e)) at(e.ts).wins++;
     else at(e.ts).slips++;
   }
   for (const r of runs) {
@@ -218,7 +247,8 @@ export function lifeScore(
     prevWins = 0,
     prevSlips = 0;
   for (const e of valid(log)) {
-    const win = e.kind === 'seek' || e.outcome === 'skipped';
+    if (passing(e)) continue;
+    const win = isWin(e);
     if (thisWeek(e.ts)) {
       if (e.kind === 'seek') visits++;
       else if (e.outcome === 'skipped') skipped++;

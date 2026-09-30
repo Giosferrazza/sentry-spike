@@ -81,6 +81,7 @@ export default function MapScreen() {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [nameEdit, setNameEdit] = useState('');
+  const [reasonEdit, setReasonEdit] = useState('');
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Suggestion[] | null>(null);
   const [searching, setSearching] = useState(false);
@@ -313,8 +314,15 @@ export default function MapScreen() {
     persist(fences.map((f) => (f.id === selected.id ? { ...f, name } : f)));
   };
 
+  const commitReason = () => {
+    const reason = reasonEdit.trim();
+    if (!selected || reason === (selected.reason ?? '')) return;
+    persist(fences.map((f) => (f.id === selected.id ? { ...f, reason: reason || undefined } : f)));
+  };
+
   const closeSelected = () => {
     commitName();
+    commitReason();
     setSelectedId(null);
   };
 
@@ -365,6 +373,7 @@ export default function MapScreen() {
                   setDraft(null);
                   setSelectedId(f.id);
                   setNameEdit(f.name);
+                  setReasonEdit(f.reason ?? '');
                 }}
               />
             </React.Fragment>
@@ -485,6 +494,9 @@ export default function MapScreen() {
             name={nameEdit}
             onName={setNameEdit}
             onNameDone={commitName}
+            reason={reasonEdit}
+            onReason={setReasonEdit}
+            onReasonDone={commitReason}
             kind={selected.kind}
             onKind={setSelectedKind}
             meta={describe(selected)}
@@ -536,6 +548,9 @@ function FenceSheet({
   name,
   onName,
   onNameDone,
+  reason,
+  onReason,
+  onReasonDone,
   kind,
   onKind,
   meta,
@@ -548,6 +563,10 @@ function FenceSheet({
   name: string;
   onName: (s: string) => void;
   onNameDone?: () => void;
+  // Shown on the arrival alert. Saved fences only.
+  reason?: string;
+  onReason?: (s: string) => void;
+  onReasonDone?: () => void;
   kind: FenceKind;
   onKind: (k: FenceKind) => void;
   meta: string;
@@ -580,6 +599,20 @@ function FenceSheet({
         onChange={onKind}
         colors={KIND_COLORS}
       />
+      {onReason ? (
+        <TextInput
+          style={styles.reasonInput}
+          value={reason}
+          onChangeText={onReason}
+          onEndEditing={onReasonDone}
+          placeholder={kind === 'avoid' ? 'Why skip it? (shown when you arrive)' : 'Why go here? (shown when you arrive)'}
+          placeholderTextColor={C.textMuted}
+          returnKeyType="done"
+          submitBehavior="blurAndSubmit"
+          multiline
+          maxLength={140}
+        />
+      ) : null}
       {radius !== undefined && onRadius ? (
         <View>
           <View style={styles.radiusHead}>
@@ -700,6 +733,14 @@ const styles = StyleSheet.create({
     marginBottom: S.xs,
   },
   nameInput: { color: C.text, fontSize: 22, fontWeight: '700', paddingVertical: S.xs },
+  reasonInput: {
+    color: C.text,
+    fontSize: 15,
+    paddingHorizontal: S.md,
+    paddingVertical: S.sm,
+    borderRadius: R.md,
+    backgroundColor: C.raised,
+  },
   meta: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   routineRow: {
     flexDirection: 'row',

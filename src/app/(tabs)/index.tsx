@@ -8,7 +8,7 @@ import { Dial } from '@/components/dial';
 import { Card, Dot, Icon, Row, Screen } from '@/components/ui';
 import { ROUTINES_ENABLED } from '@/constants/features';
 import { C, R, S, T } from '@/constants/ui';
-import { byDay, byPlace, heatmap, lifeScore, peakAvoidWindow } from '@/lib/analytics';
+import { byDay, byPlace, heatmap, lifeScore, peakAvoidWindow, placeStreak } from '@/lib/analytics';
 import { Fence, KIND_COLORS, loadFences, loadLog, LogEntry } from '@/lib/fences';
 import { loadName, saveName } from '@/lib/profile';
 import { loadRuns, RoutineRun } from '@/lib/routines';
@@ -44,9 +44,17 @@ export default function InsightsScreen() {
   const peak = peakAvoidWindow(log);
   const history = heatmap(log);
   const activeDays = history.flat().filter((d) => d.seek + d.avoid > 0).length;
+  // Current fences plus deleted ones with history; a stay-out fence you've
+  // never entered still shows so its clean streak counts.
   const places = byPlace(log, fences)
-    .filter((p) => p.entries > 0)
-    .slice(0, TOP_PLACES);
+    .filter((p) => p.entries > 0 || (!p.deleted && p.kind === 'avoid'))
+    .slice(0, TOP_PLACES)
+    .map((p) => ({
+      ...p,
+      streak: p.deleted
+        ? 0
+        : placeStreak(log, p.fenceId, p.kind, fences.find((f) => f.id === p.fenceId)?.createdAt ?? null),
+    }));
 
   return (
     <Screen
@@ -110,18 +118,33 @@ export default function InsightsScreen() {
               key={p.fenceId}
               leading={<Dot color={KIND_COLORS[p.kind]} />}
               title={p.name}
-              subtitle={
-                p.last
-                  ? `Last ${new Date(p.last).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
-                  : undefined
-              }
-              trailing={<Text style={styles.count}>{p.entries}</Text>}
+              subtitle={placeSubtitle(p)}
+              trailing={<Streak days={p.streak} />}
               last={i === places.length - 1}
             />
           ))}
         </Card>
       )}
     </Screen>
+  );
+}
+
+function placeSubtitle(p: ReturnType<typeof byPlace>[number] & { streak: number }): string {
+  const streak =
+    p.kind === 'seek'
+      ? p.streak > 0 && `${p.streak}-visit streak`
+      : p.streak > 0 && `${p.streak} ${p.streak === 1 ? 'day' : 'days'} clean`;
+  const visits = `${p.entries} ${p.entries === 1 ? 'visit' : 'visits'}`;
+  return streak ? `${streak} · ${visits}` : visits;
+}
+
+function Streak({ days }: { days: number }) {
+  const color = days > 0 ? C.streak : C.textSecondary;
+  return (
+    <View style={styles.streak}>
+      <Icon name="flame.fill" size={14} color={color} />
+      <Text style={[styles.count, days === 0 && { color: C.textSecondary }]}>{days}</Text>
+    </View>
   );
 }
 
@@ -158,7 +181,7 @@ function LifeScoreCard({ life, day }: { life: ReturnType<typeof lifeScore>; day:
   // Nothing logged yet today: sit at neutral and just be glad you're up.
   const fresh = isToday && life.visits + life.skipped + life.routines + life.slips === 0;
   const label = isToday
-    ? 'Life score'
+    ? "Today's life score"
     : `Life score · ${day.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}`;
 
   return (
@@ -200,6 +223,7 @@ const styles = StyleSheet.create({
     borderTopColor: C.line,
   },
   strong: { color: C.text, fontWeight: '600' },
+  streak: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   count: {
     color: C.text,
     fontSize: 17,

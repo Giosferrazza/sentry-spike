@@ -81,27 +81,22 @@ func dailyTallies(_ snap: Snapshot) -> [Date: Tally] {
 
 struct LifeScore {
     let score: Int
-    let band: String
-    let delta: Int? // nil if either week is empty (mirrors analytics.ts)
-    let prevScore: Int?
+    let delta: Int? // vs yesterday; nil if either day is empty (mirrors analytics.ts)
 }
 
+// Today's score, same as the Home card (lifeScore(..., days = 1)).
 func lifeScore(_ tallies: [Date: Tally], now: Date) -> LifeScore {
     let cal = Calendar.current
     let today = cal.startOfDay(for: now)
-    var cur = Tally(), prev = Tally()
-    for (day, t) in tallies {
-        guard let age = cal.dateComponents([.day], from: day, to: today).day else { continue }
-        if age >= 0 && age < 7 { cur.wins += t.wins; cur.slips += t.slips }
-        else if age >= 7 && age < 14 { prev.wins += t.wins; prev.slips += t.slips }
-    }
-    // Wins vs slips, Laplace-smoothed (mirrors scoreOf in analytics.ts).
-    func score(_ t: Tally) -> Int { Int((100.0 * (t.wins + 1) / (t.wins + t.slips + 2)).rounded()) }
+    let yesterday = cal.date(byAdding: .day, value: -1, to: today)!
+    let cur = tallies[today] ?? Tally()
+    let prev = tallies[yesterday] ?? Tally()
+    // Wins vs slips, Laplace-smoothed, plus the one "woke up" win every day
+    // starts with (mirrors scoreOf and lifeScore in analytics.ts).
+    func score(_ t: Tally) -> Int { Int((100.0 * (t.wins + 2) / (t.wins + 1 + t.slips + 2)).rounded()) }
     let s = score(cur)
-    let band = s >= 80 ? "Thriving" : s >= 60 ? "On track" : s >= 40 ? "Mixed" : "Rough week"
-    let prevScore = prev.wins + prev.slips > 0 ? score(prev) : nil
-    let delta = prevScore.flatMap { p in cur.wins + cur.slips > 0 ? s - p : nil }
-    return LifeScore(score: s, band: band, delta: delta, prevScore: prevScore)
+    let hasCur = cur.wins + cur.slips > 0, hasPrev = prev.wins + prev.slips > 0
+    return LifeScore(score: s, delta: hasCur && hasPrev ? s - score(prev) : nil)
 }
 
 // MARK: - Timeline
@@ -168,17 +163,10 @@ struct SentryWidgetView: View {
         if let snap = entry.snapshot {
             content(snap)
         } else {
-            VStack(alignment: .leading, spacing: 6) {
-                header(monitoring: false, fenceCount: 0)
-                Spacer()
-                Text("Open Sentry to start")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Palette.primary)
-                Text("Draw a fence and your Life Score shows up here.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Palette.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Text("Open Sentry to start")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Palette.primary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -187,91 +175,90 @@ struct SentryWidgetView: View {
         let tallies = dailyTallies(snap)
         let life = lifeScore(tallies, now: entry.date)
 
-        VStack(alignment: .leading, spacing: 0) {
-            header(monitoring: snap.monitoring, fenceCount: snap.fenceCount)
-                .padding(.bottom, 8)
-
-            HStack(alignment: .top, spacing: 14) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("LIFE SCORE")
-                        .font(.system(size: 9, weight: .semibold))
-                        .tracking(0.8)
-                        .foregroundStyle(Palette.muted)
-                    Text("\(life.score)")
-                        .font(.system(size: 42, weight: .bold, design: .rounded))
-                        .foregroundStyle(Palette.primary)
-                        .contentTransition(.numericText())
-                    Text(life.band)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Palette.primary)
-                        .lineLimit(1)
-                    Text(deltaText(life))
+        HStack(alignment: .center, spacing: 14) {
+            VStack(spacing: 2) {
+                // Overline, same as T.overline in the app.
+                Text("TODAY'S LIFE SCORE")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.6)
+                    .foregroundStyle(Palette.muted)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                ScoreDial(score: life.score)
+                    .frame(width: 84, height: 72)
+                if let d = life.delta, d != 0 {
+                    Text("\(d > 0 ? "+" : "−")\(abs(d)) vs yesterday")
                         .font(.system(size: 11))
+                        .monospacedDigit()
                         .foregroundStyle(Palette.secondary)
                         .lineLimit(1)
                 }
-                .frame(width: 96, alignment: .leading)
-
-                HeatGrid(tallies: tallies, now: entry.date)
             }
+            .frame(width: 112)
 
-            Spacer(minLength: 6)
-            lastLine(snap)
-        }
-    }
-
-    func deltaText(_ life: LifeScore) -> String {
-        guard let d = life.delta else {
-            return life.prevScore.map { "Last week: \($0)" } ?? "First week"
-        }
-        if d == 0 { return "Same as last week" }
-        return "\(d > 0 ? "+" : "−")\(abs(d)) vs last week"
-    }
-
-    func header(monitoring: Bool, fenceCount: Int) -> some View {
-        HStack(spacing: 6) {
-            Text("SENTRY")
-                .font(.system(size: 11, weight: .bold))
-                .tracking(1.2)
-                .foregroundStyle(Palette.secondary)
-            Spacer()
-            Circle()
-                .fill(monitoring ? Palette.primary : Palette.muted)
-                .frame(width: 6, height: 6)
-            Text(monitoring ? "Watching \(fenceCount)" : "Paused")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Palette.secondary)
-        }
-    }
-
-    @ViewBuilder
-    func lastLine(_ snap: Snapshot) -> some View {
-        if let last = snap.entries.first {
-            let when = Date(timeIntervalSince1970: last.ts / 1000)
-            HStack(spacing: 6) {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(last.kind == "seek" ? Palette.seek : Palette.avoid)
-                    .frame(width: 8, height: 8)
-                Text("Last: \(last.name)")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Palette.primary)
-                    .lineLimit(1)
-                Text(when, format: Calendar.current.isDateInToday(when)
-                     ? .dateTime.hour().minute()
-                     : .dateTime.weekday(.abbreviated).hour().minute())
-                    .font(.system(size: 12))
-                    .foregroundStyle(Palette.muted)
-                    .lineLimit(1)
-            }
-        } else {
-            Text("No visits this week")
-                .font(.system(size: 12))
-                .foregroundStyle(Palette.muted)
+            HeatGrid(tallies: tallies, now: entry.date)
         }
     }
 }
 
-// As many weeks as fit, newest column on the right, rows Sun..Sat.
+// A small version of the app's Dial (src/components/dial.tsx): a 240° arc on
+// the track color, filled up to the score in each band's zone color, with the
+// number in the middle.
+struct ScoreDial: View {
+    let score: Int
+    private let sweep = 240.0 / 360.0
+    private let line: CGFloat = 7
+    private let needle: CGFloat = 22
+    // Band edges and colors, same as zoneColor() in dial.tsx.
+    private let zones: [(from: Double, to: Double, color: Color)] = [
+        (0, 40, Palette.avoid), (40, 60, Palette.even), (60, 80, Palette.seek1), (80, 100, Palette.seek),
+    ]
+
+    var body: some View {
+        ZStack {
+            arc(0, 1).stroke(Palette.track, style: StrokeStyle(lineWidth: line, lineCap: .round))
+            ForEach(zones.indices, id: \.self) { i in
+                let z = zones[i]
+                let end = min(Double(score), z.to)
+                if end > z.from {
+                    arc(z.from / 100, end / 100).stroke(z.color, style: StrokeStyle(lineWidth: line, lineCap: .butt))
+                }
+            }
+            // Needle and hub, like the app's Dial. 0° is straight up; the
+            // sweep runs -120°...+120° (angleOf in dial.tsx).
+            Capsule()
+                .fill(Palette.primary)
+                .frame(width: 3, height: needle)
+                .offset(y: -needle / 2)
+                .rotationEffect(.degrees(-120 + 240 * Double(score) / 100))
+                .shadow(color: Palette.primary.opacity(0.5), radius: 3)
+            Circle()
+                .fill(Palette.primary)
+                .frame(width: 11, height: 11)
+                .overlay(Circle().fill(Palette.track).frame(width: 4, height: 4))
+            // The number sits in the arc's open gap under the hub.
+            Text("\(score)")
+                .font(.system(size: 18, weight: .bold))
+                .tracking(-0.5)
+                .monospacedDigit()
+                .foregroundStyle(Palette.primary)
+                .contentTransition(.numericText())
+                .offset(y: 23)
+        }
+    }
+
+    // Trim runs clockwise from 3 o'clock; rotating 150° starts the arc at
+    // lower left so it opens at the bottom, like the app's dial.
+    private func arc(_ from: Double, _ to: Double) -> some Shape {
+        Circle()
+            .inset(by: line / 2)
+            .trim(from: from * sweep, to: to * sweep)
+            .rotation(.degrees(150))
+    }
+}
+
+// A rolling window of as many full 7-day columns as fit, oldest top-left,
+// today in the bottom-right cell (no half-empty current-week column).
 struct HeatGrid: View {
     let tallies: [Date: Tally]
     let now: Date
@@ -283,8 +270,7 @@ struct HeatGrid: View {
             let weeks = max(1, min(16, Int((geo.size.width + gap) / (cell + gap))))
             let cal = Calendar.current
             let today = cal.startOfDay(for: now)
-            let weekday = cal.component(.weekday, from: today) - 1 // 0 = Sunday
-            let start = cal.date(byAdding: .day, value: -weekday - (weeks - 1) * 7, to: today)!
+            let start = cal.date(byAdding: .day, value: -(weeks * 7 - 1), to: today)!
 
             HStack(spacing: gap) {
                 ForEach(0..<weeks, id: \.self) { w in
@@ -292,7 +278,7 @@ struct HeatGrid: View {
                         ForEach(0..<7, id: \.self) { d in
                             let day = cal.date(byAdding: .day, value: w * 7 + d, to: start)!
                             RoundedRectangle(cornerRadius: 2)
-                                .fill(day > today ? Color.clear : heatColor(tallies[day]))
+                                .fill(heatColor(tallies[day]))
                                 .frame(width: cell, height: cell)
                         }
                     }

@@ -369,7 +369,8 @@ export function Heatmap({
           </View>
           <View style={{ flexDirection: 'row', marginTop: 4 }}>
             <View style={{ width: DAY_LABEL_W, gap: GAP }}>
-              {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((l, i) => (
+              {/* Rows follow the rolling window, so label them from the first column. */}
+              {(grid[0] ?? []).map((d) => 'SMTWTFS'[d.date.getDay()]).map((l, i) => (
                 <Text key={i} style={[s.heatDay, { height: cell, lineHeight: cell }]}>
                   {l}
                 </Text>

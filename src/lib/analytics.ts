@@ -304,17 +304,17 @@ export function peakAvoidWindow(log: LogEntry[], now = new Date()): string | nul
 }
 
 // ---------------------------------------------------------------------------
-// GitHub-style history grid: one cell per day, weeks as columns (Sun..Sat),
-// ending with the current week. Future days in the current week are flagged.
+// GitHub-style history grid: one cell per day in 7-day columns, a rolling
+// window that ends with today in the last cell (same as the widget), so there's
+// never a half-empty current week. `future` is always false; kept for callers.
 
 export type HeatDay = { date: Date; seek: number; avoid: number; future: boolean };
 
 export function heatmap(log: LogEntry[], weeks = 17, now = new Date()): HeatDay[][] {
   const today = startOfDay(now);
   const todayDate = new Date(today);
-  // Sunday that starts the first column.
   const start = new Date(todayDate);
-  start.setDate(start.getDate() - todayDate.getDay() - (weeks - 1) * 7);
+  start.setDate(start.getDate() - (weeks * 7 - 1));
 
   const counts = new Map<number, KindCounts>();
   for (const e of valid(log)) {

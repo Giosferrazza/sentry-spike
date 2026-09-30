@@ -58,10 +58,12 @@ export function LassoSelectIcon({ color, background }: { color: string; backgrou
 export function Screen({
   title,
   subtitle,
+  onTitlePress,
   children,
 }: {
   title: string;
   subtitle?: string;
+  onTitlePress?: () => void;
   children: React.ReactNode;
 }) {
   const insets = useSafeAreaInsets();
@@ -71,7 +73,9 @@ export function Screen({
       contentInsetAdjustmentBehavior="never"
       contentContainerStyle={[s.screenContent, { paddingBottom: insets.bottom + BottomTabInset + S.xxl }]}>
       <View style={s.screenHead}>
-        <Text style={T.largeTitle}>{title}</Text>
+        <Text style={T.largeTitle} onPress={onTitlePress} suppressHighlighting>
+          {title}
+        </Text>
         {subtitle ? <Text style={[T.caption, { marginTop: 2 }]}>{subtitle}</Text> : null}
       </View>
       {children}

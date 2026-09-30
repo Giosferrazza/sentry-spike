@@ -233,8 +233,9 @@ export function lifeScore(
   }
 
   const wins = visits + skipped + routines;
-  const score = scoreOf(wins, slips);
-  const prevScore = prevWins + prevSlips > 0 ? scoreOf(prevWins, prevSlips) : null;
+  // Waking up counts: every day in the window starts with one win on the board.
+  const score = scoreOf(wins + days, slips);
+  const prevScore = prevWins + prevSlips > 0 ? scoreOf(prevWins + days, prevSlips) : null;
   return {
     score,
     band: bandOf(score),

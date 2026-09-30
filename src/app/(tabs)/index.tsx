@@ -1,13 +1,15 @@
 import { useFocusEffect } from 'expo-router';
 import React, { useCallback, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { Heatmap, Legend, StackedColumns } from '@/components/charts';
 import { activeRoutines, RoutineCard } from '@/components/routine-card';
+import { Dial } from '@/components/dial';
 import { Card, Dot, Icon, Row, Screen } from '@/components/ui';
 import { C, R, S, T } from '@/constants/ui';
 import { byDay, byPlace, heatmap, lifeScore, peakAvoidWindow } from '@/lib/analytics';
 import { Fence, KIND_COLORS, loadFences, loadLog, LogEntry } from '@/lib/fences';
+import { loadName, saveName } from '@/lib/profile';
 import { loadRuns, RoutineRun } from '@/lib/routines';
 
 const WEEK_TICKS = [0, 1, 2, 3, 4, 5, 6];
@@ -17,22 +19,24 @@ export default function InsightsScreen() {
   const [log, setLog] = useState<LogEntry[]>([]);
   const [fences, setFences] = useState<Fence[]>([]);
   const [runs, setRuns] = useState<RoutineRun[]>([]);
+  const [name, setName] = useState<string | null>(null); // null until loaded
+  const [editingName, setEditingName] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
-      Promise.all([loadLog(), loadFences(), loadRuns()]).then(([l, f, r]) => {
+      Promise.all([loadLog(), loadFences(), loadRuns(), loadName()]).then(([l, f, r, n]) => {
         setLog(l);
         setFences(f);
         setRuns(r);
+        setName(n);
       });
     }, [])
   );
 
-  // Score card: the week, or a single day (today, or a day tapped in History).
-  const [mode, setMode] = useState<'day' | 'week'>('week');
+  // Score card: today, or a day tapped in History.
   const [day, setDay] = useState<Date | null>(null);
   const shownDay = day ?? new Date();
-  const life = mode === 'week' ? lifeScore(log, runs, fences) : lifeScore(log, runs, fences, shownDay, 1);
+  const life = lifeScore(log, runs, fences, shownDay, 1);
   const today = activeRoutines(fences, runs);
   const week = byDay(log, 7, new Date(), 'weekday');
   const weekTotal = week.reduce((n, d) => n + d.counts.avoid + d.counts.seek, 0);
@@ -45,17 +49,19 @@ export default function InsightsScreen() {
 
   return (
     <Screen
-      title={greeting(new Date())}
-      subtitle={new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}>
-      <LifeScoreCard
-        life={life}
-        mode={mode}
-        day={shownDay}
-        onMode={(m) => {
-          setMode(m);
-          if (m === 'week') setDay(null);
-        }}
-      />
+      title={name ? `${greeting(new Date())}, ${name}` : greeting(new Date())}
+      onTitlePress={() => setEditingName(true)}>
+      {(name === '' || editingName) && (
+        <NameCard
+          initial={name ?? ''}
+          onSave={async (n) => {
+            await saveName(n);
+            setName(await loadName());
+            setEditingName(false);
+          }}
+        />
+      )}
+      <LifeScoreCard life={life} day={shownDay} />
 
       {today.length > 0 && (
         <>
@@ -69,10 +75,7 @@ export default function InsightsScreen() {
       <Card title="History">
         <Heatmap
           grid={history}
-          onSelect={(d) => {
-            setDay(d);
-            setMode(d ? 'day' : 'week');
-          }}
+          onSelect={setDay}
           idle={
             activeDays
               ? `${activeDays} days with visits · tap a day`
@@ -131,94 +134,66 @@ function greeting(d: Date): string {
   return h < 5 ? 'Good night' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
 }
 
-function LifeScoreCard({
-  life,
-  mode,
-  day,
-  onMode,
-}: {
-  life: ReturnType<typeof lifeScore>;
-  mode: 'day' | 'week';
-  day: Date;
-  onMode: (m: 'day' | 'week') => void;
-}) {
-  const n = (x: number) => (Number.isInteger(x) ? String(x) : x.toFixed(1));
+// Asks for a first name once (and again when the greeting is tapped).
+function NameCard({ initial, onSave }: { initial: string; onSave: (name: string) => void }) {
+  const [draft, setDraft] = useState(initial);
+  return (
+    <Card title="What should we call you?">
+      <TextInput
+        style={styles.nameInput}
+        value={draft}
+        onChangeText={setDraft}
+        onSubmitEditing={() => onSave(draft)}
+        placeholder="First name"
+        placeholderTextColor={C.textMuted}
+        autoCapitalize="words"
+        autoCorrect={false}
+        textContentType="givenName"
+        autoComplete="name-given"
+        returnKeyType="done"
+        autoFocus={initial !== ''}
+      />
+    </Card>
+  );
+}
+
+function LifeScoreCard({ life, day }: { life: ReturnType<typeof lifeScore>; day: Date }) {
   const isToday = day.toDateString() === new Date().toDateString();
-  const period = mode === 'week' ? 'week' : isToday ? 'today' : 'that day';
-  const wins = life.visits + life.skipped + life.routines;
-  const parts = [
-    life.visits && `${life.visits} go-here ${life.visits === 1 ? 'visit' : 'visits'}`,
-    life.skipped && `${life.skipped} skipped`,
-    life.routines && `${n(life.routines)} ${life.routines === 1 ? 'routine' : 'routines'} done`,
-  ].filter(Boolean);
-  const explain =
-    wins + life.slips === 0
-      ? `Nothing logged ${period === 'week' ? 'this week' : period} yet, so it sits at a neutral 50.`
-      : `${n(wins)} ${wins === 1 ? 'win' : 'wins'}, ${life.slips} ${life.slips === 1 ? 'slip' : 'slips'}` +
-        (parts.length ? ` · ${parts.join(', ')}` : '');
-  const vs = mode === 'week' ? 'last week' : isToday ? 'yesterday' : 'the day before';
-  const Vs = vs[0].toUpperCase() + vs.slice(1);
-  const delta =
-    life.delta !== null
-      ? life.delta === 0
-        ? `Same as ${vs}`
-        : `${life.delta > 0 ? '+' : '−'}${Math.abs(life.delta)} vs ${vs}`
-      : life.prevScore !== null
-        ? `${Vs}: ${life.prevScore}`
-        : mode === 'week'
-          ? 'First week'
-          : `Nothing ${vs}`;
-  const label =
-    mode === 'week'
-      ? 'Life score · 7 days'
-      : `Life score · ${isToday ? 'today' : day.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}`;
+  // Nothing logged yet today: sit at neutral and just be glad you're up.
+  const fresh = isToday && life.visits + life.skipped + life.routines + life.slips === 0;
+  const label = isToday
+    ? 'Life score'
+    : `Life score · ${day.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}`;
 
   return (
     <Card>
-      <View style={styles.cardTop}>
-        <Text style={[T.overline, { flex: 1 }]}>{label}</Text>
-        <View style={styles.toggle}>
-          {(['day', 'week'] as const).map((m) => (
-            <Pressable
-              key={m}
-              onPress={() => onMode(m)}
-              style={[styles.toggleBtn, mode === m && styles.toggleOn]}
-              accessibilityState={{ selected: mode === m }}>
-              <Text style={[styles.toggleText, mode === m && styles.toggleTextOn]}>
-                {m === 'day' ? 'Day' : 'Week'}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
+      <Text style={[T.overline, { textAlign: 'center' }]}>{label}</Text>
+      <View style={{ marginTop: S.md }}>
+        <Dial score={life.score}>
+          {fresh ? (
+            <>
+              <Text style={T.title}>Fresh start</Text>
+              <Text style={T.caption}>Congrats, you woke up today. +1</Text>
+            </>
+          ) : (
+            <Text style={T.title}>{life.band}</Text>
+          )}
+        </Dial>
       </View>
-      <View style={styles.scoreRow}>
-        <Text style={styles.score}>{life.score}</Text>
-        <View style={styles.scoreSide}>
-          <Text style={T.title}>{life.band}</Text>
-          <Text style={T.caption}>{delta}</Text>
-        </View>
-      </View>
-      <View style={styles.meter} accessibilityLabel={`Life score ${life.score} out of 100`}>
-        <View style={[styles.meterFill, { width: `${Math.max(2, life.score)}%` }]} />
-      </View>
-      <Text style={[T.caption, { marginTop: S.md }]}>{explain}</Text>
     </Card>
   );
 }
 
 const styles = StyleSheet.create({
-  cardTop: { flexDirection: 'row', alignItems: 'center', gap: S.sm },
-  toggle: { flexDirection: 'row', backgroundColor: C.raised, borderRadius: R.pill, padding: 2 },
-  toggleBtn: { paddingHorizontal: S.md, paddingVertical: 4, borderRadius: R.pill },
-  toggleOn: { backgroundColor: C.line },
-  toggleText: { color: C.textSecondary, fontSize: 13, fontWeight: '600' },
-  toggleTextOn: { color: C.text },
+  nameInput: {
+    height: 50,
+    color: C.text,
+    fontSize: 16,
+    paddingHorizontal: S.lg,
+    borderRadius: R.md,
+    backgroundColor: C.raised,
+  },
   section: { marginTop: S.sm, marginLeft: S.xs },
-  scoreRow: { flexDirection: 'row', alignItems: 'flex-end', gap: S.md, marginTop: S.xs },
-  score: { fontSize: 64, fontWeight: '700', color: C.text, letterSpacing: -2, fontVariant: ['tabular-nums'] },
-  scoreSide: { paddingBottom: 12, gap: 2 },
-  meter: { height: 8, borderRadius: R.pill, backgroundColor: C.raised, overflow: 'hidden', marginTop: S.sm },
-  meterFill: { height: '100%', borderRadius: R.pill, backgroundColor: C.text },
   pattern: {
     flexDirection: 'row',
     alignItems: 'center',

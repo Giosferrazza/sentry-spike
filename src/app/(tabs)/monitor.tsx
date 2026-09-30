@@ -6,6 +6,7 @@ import { ActionSheetIOS, Alert, Linking, Pressable, StyleSheet, Text, View } fro
 
 import { Button, Card, Dot, Icon, Row, Screen } from '@/components/ui';
 import { C, S, T } from '@/constants/ui';
+import { loadSampleHistory } from '@/lib/sample-data';
 import {
   buzz,
   clearLog,
@@ -90,7 +91,8 @@ export default function MonitorScreen() {
   // Test menu: a plain notification, or a full simulated arrival at a fence
   // (buzz + log entry + routine), so counts and the Life Score move.
   const openTest = () => {
-    const options = ['Test notification', ...fences.map((f) => `Arrive at ${f.name}`), 'Cancel'];
+    const sample = __DEV__ ? ['Load sample history'] : [];
+    const options = ['Test notification', ...fences.map((f) => `Arrive at ${f.name}`), ...sample, 'Cancel'];
     ActionSheetIOS.showActionSheetWithOptions(
       {
         options,
@@ -105,6 +107,13 @@ export default function MonitorScreen() {
           await buzz('Test buzz', 'If you feel/see this, notifications work.');
         } else if (i > 0 && i <= fences.length) {
           await simulateArrival(fences[i - 1]);
+          refresh();
+        } else if (sample.length && i === fences.length + 1) {
+          const { entries, runs } = await loadSampleHistory();
+          Alert.alert(
+            'Sample history loaded',
+            `${entries} visits${runs ? ` and ${runs} routine runs` : ''} over the last 17 weeks.`
+          );
           refresh();
         }
       }

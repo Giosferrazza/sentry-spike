@@ -1,4 +1,5 @@
 import { NativeTabs } from 'expo-router/unstable-native-tabs';
+import { ROUTINES_ENABLED } from '@/constants/features';
 import { Colors } from '@/constants/theme';
 
 export default function AppTabs() {
@@ -18,7 +19,7 @@ export default function AppTabs() {
         <NativeTabs.Trigger.Icon sf="house" />
       </NativeTabs.Trigger>
 
-      <NativeTabs.Trigger name="routines">
+      <NativeTabs.Trigger name="routines" hidden={!ROUTINES_ENABLED}>
         <NativeTabs.Trigger.Label>Routines</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon sf="checklist" />
       </NativeTabs.Trigger>

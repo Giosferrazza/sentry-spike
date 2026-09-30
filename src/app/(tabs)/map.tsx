@@ -19,6 +19,7 @@ import MapView, { Circle, Polygon, Polyline, Region } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Button, Icon, IconButton, LassoSelectIcon, Segmented } from '@/components/ui';
+import { ROUTINES_ENABLED } from '@/constants/features';
 import { BottomTabInset } from '@/constants/theme';
 import { C, R, S, T } from '@/constants/ui';
 import {
@@ -488,7 +489,7 @@ export default function MapScreen() {
             onKind={setSelectedKind}
             meta={describe(selected)}
             routine={
-              selected.kind === 'seek'
+              ROUTINES_ENABLED && selected.kind === 'seek'
                 ? {
                     count: selected.habits?.length ?? 0,
                     onPress: () => {

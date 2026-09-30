@@ -14,7 +14,7 @@ export type RoutineRun = {
 };
 
 const RUNS_KEY = 'sentry-routine-runs';
-const MAX_RUNS = 200;
+export const MAX_RUNS = 500;
 // A run stays "current" this long after arrival; later opens start a new one.
 export const RUN_WINDOW_MS = 12 * 3_600_000;
 

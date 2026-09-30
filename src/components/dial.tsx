@@ -8,6 +8,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { HEAT } from '@/components/charts';
 import { C } from '@/constants/ui';
 
 // A dashboard gauge built from plain Views (no SVG): a solid 240° arc that fills
@@ -19,9 +20,10 @@ const ARC = 12; // arc thickness
 const DURATION = 900;
 const NEUTRAL = 50;
 
-// Zone colors along the arc, matching the Life Score bands.
+// Zone colors along the arc, one per Life Score band, on the app's diverging
+// scale: Rough week (stay-out red) -> Mixed (gray) -> On track -> Thriving (go-here blue).
 export function zoneColor(score: number) {
-  return score >= 80 ? '#30c46c' : score >= 60 ? '#9bd35a' : score >= 40 ? '#f5a524' : C.danger;
+  return score >= 80 ? HEAT.seek2 : score >= 60 ? HEAT.seek1 : score >= 40 ? HEAT.even : HEAT.avoid2;
 }
 
 // Runs on the UI thread inside the needle's animated style, so it's a worklet.
@@ -70,7 +72,7 @@ export function Dial({
         ))}
 
         <View style={[styles.fill, full, styles.readout, { paddingBottom: size * 0.14 + 4 }]} pointerEvents="none">
-          <Text style={[styles.score, { color: zoneColor(shown) }]}>{shown}</Text>
+          <Text style={styles.score}>{shown}</Text>
         </View>
 
         <Animated.View style={[styles.fill, full, needle]} pointerEvents="none">
@@ -149,5 +151,5 @@ const styles = StyleSheet.create({
   hubDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: C.surface },
   // The number sits in the open gap under the hub, clear of the needle's path.
   readout: { justifyContent: 'flex-end' },
-  score: { fontSize: 48, fontWeight: '700', letterSpacing: -1.5, fontVariant: ['tabular-nums'] },
+  score: { fontSize: 48, fontWeight: '700', color: C.text, letterSpacing: -1.5, fontVariant: ['tabular-nums'] },
 });

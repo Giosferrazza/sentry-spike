@@ -14,6 +14,7 @@ import { ThemedText } from './themed-text';
 import { ThemedView } from './themed-view';
 
 import { Colors, MaxContentWidth, Spacing } from '@/constants/theme';
+import { ROUTINES_ENABLED } from '@/constants/features';
 
 export default function AppTabs() {
   return (
@@ -24,9 +25,11 @@ export default function AppTabs() {
           <TabTrigger name="home" href="/" asChild>
             <TabButton>Home</TabButton>
           </TabTrigger>
-          <TabTrigger name="routines" href="/routines" asChild>
-            <TabButton>Routines</TabButton>
-          </TabTrigger>
+          {ROUTINES_ENABLED && (
+            <TabTrigger name="routines" href="/routines" asChild>
+              <TabButton>Routines</TabButton>
+            </TabTrigger>
+          )}
           <TabTrigger name="map" href="/map" asChild>
             <TabButton>Map</TabButton>
           </TabTrigger>

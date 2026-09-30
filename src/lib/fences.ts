@@ -4,6 +4,8 @@ import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 import { Vibration } from 'react-native';
 
+import { ROUTINES_ENABLED } from '@/constants/features';
+
 import { distanceMeters, enclosingCircle, LatLng, pointInPolygon } from './geo';
 import { decideEnter, Presence } from './presence';
 import { Habit, loadRuns, startRun } from './routines';
@@ -45,6 +47,8 @@ export const MAX_FENCES = 20; // hard iOS limit on monitored regions per app
 
 const FENCES_KEY = 'sentry-fences';
 const LOG_KEY = 'sentry-entry-log';
+// Enough for the 17-week History heatmap at a few visits a day (~150 KB).
+export const MAX_LOG = 1000;
 const PRESENCE_KEY = 'sentry-presence';
 
 // Orange/blue, validated for color-vision deficiency on the dark surface
@@ -96,7 +100,7 @@ export async function clearLog(): Promise<void> {
 async function appendLog(entry: LogEntry): Promise<void> {
   const log = await loadLog();
   log.unshift(entry);
-  await AsyncStorage.setItem(LOG_KEY, JSON.stringify(log.slice(0, 200)));
+  await AsyncStorage.setItem(LOG_KEY, JSON.stringify(log.slice(0, MAX_LOG)));
   await refreshWidget();
 }
 
@@ -310,7 +314,7 @@ async function handleArrival(fence: Fence, now: Date, insidePolygon: boolean | n
       category: STAY_OUT_CATEGORY,
       data: { entryTs },
     });
-  } else if (fence.habits?.length) {
+  } else if (ROUTINES_ENABLED && fence.habits?.length) {
     // Tapping opens the checklist (see useNotificationLinks in the root layout).
     await startRun(fence.id, now);
     const n = fence.habits.length;

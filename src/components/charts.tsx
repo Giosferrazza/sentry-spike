@@ -125,33 +125,170 @@ export function StackedColumns({
         </View>
       </View>
 
-      {/* Labels are wider than a slot, so each is centered on its slot and
-          allowed to overhang; the first and last hug the plot edges. */}
-      <View style={s.xAxis}>
-        {ticks.map((i) => {
-          const bk = buckets[i];
-          const n = buckets.length;
-          const last = i === n - 1;
-          const edge = i === 0 ? { left: 0 } : last ? { right: 0 } : null;
-          return (
-            <View
+      <XAxis labels={buckets.map((bk) => bk.label)} ticks={ticks} />
+    </View>
+  );
+}
+
+// Labels are wider than a slot, so each is centered on its slot and allowed to
+// overhang; the first and last hug the plot edges.
+function XAxis({ labels, ticks }: { labels: string[]; ticks: number[] }) {
+  const n = labels.length;
+  return (
+    <View style={s.xAxis}>
+      {ticks.map((i) => {
+        const last = i === n - 1;
+        const edge = i === 0 ? { left: 0 } : last ? { right: 0 } : null;
+        return (
+          <View key={i} style={[s.xTickBox, edge ?? { left: `${((i + 0.5) / n) * 100}%`, marginLeft: -30 }]}>
+            <Text style={[s.xTick, { textAlign: i === 0 ? 'left' : last ? 'right' : 'center' }]}>
+              {labels[i]}
+            </Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+// A week of daily go-here vs stay-out visit counts as two lines.
+// Lines are drawn from rotated Views (no SVG).
+
+export function WeekTrends({ buckets, ticks, idle }: { buckets: Bucket[]; ticks: number[]; idle: string }) {
+  const [sel, setSel] = useState<number | null>(null);
+  const [w, setW] = useState(0);
+  const n = buckets.length;
+  const max = niceMax(Math.max(1, ...buckets.map((b) => Math.max(b.counts.seek, b.counts.avoid))));
+  const x = (i: number) => ((i + 0.5) / n) * w;
+  const b = sel !== null ? buckets[sel] : null;
+
+  const panel = (
+    height: number,
+    top: number,
+    series: { color: string; values: number[] }[],
+    gridLabels: string[]
+  ) => (
+    <View style={s.plotRow}>
+      <View style={[s.yAxis, { height }]}>
+        {gridLabels.map((t, i) => (
+          <Text key={i} style={s.tick}>
+            {t}
+          </Text>
+        ))}
+      </View>
+      <View style={{ flex: 1, height }} onLayout={(e) => setW(e.nativeEvent.layout.width)}>
+        {[0, 0.5, 1].map((f) => (
+          <View key={f} style={[s.gridline, { top: f * (height - 1) }]} />
+        ))}
+        {sel !== null && w > 0 && <View style={[s.crosshair, { left: x(sel) - 0.5 }]} />}
+        {w > 0 &&
+          series.map(({ color, values }) => {
+            const pts = values.map((v, i) => ({
+              x: x(i),
+              y: PAD + (1 - v / top) * (height - 2 * PAD),
+            }));
+            return (
+              <React.Fragment key={color}>
+                {pts.slice(1).map((p, i) => (
+                  <Segment key={i} from={pts[i]} to={p} color={color} />
+                ))}
+                {pts.map((p, i) => (
+                  <View
+                    key={`d${i}`}
+                    style={[
+                      s.marker,
+                      { left: p.x - 5, top: p.y - 5, backgroundColor: color },
+                      sel === i && s.markerOn,
+                    ]}
+                  />
+                ))}
+              </React.Fragment>
+            );
+          })}
+        <View style={s.columns}>
+          {buckets.map((bk, i) => (
+            <Pressable
               key={i}
-              style={[s.xTickBox, edge ?? { left: `${((i + 0.5) / n) * 100}%`, marginLeft: -30 }]}>
-              <Text style={[s.xTick, { textAlign: i === 0 ? 'left' : last ? 'right' : 'center' }]}>
-                {bk.label}
-              </Text>
-            </View>
-          );
-        })}
+              style={{ flex: 1 }}
+              onPress={() => setSel(sel === i ? null : i)}
+              accessibilityLabel={`${bk.label}: ${bk.counts.seek} go here, ${bk.counts.avoid} stay out`}
+            />
+          ))}
+        </View>
       </View>
     </View>
+  );
+
+  return (
+    <View>
+      <View style={s.readout}>
+        {b ? (
+          <>
+            <Text style={s.readoutTitle}>{b.label}</Text>
+            {STACK.map((k) => (
+              <View key={k} style={s.legendItem}>
+                <View style={[s.swatch, { backgroundColor: KIND_COLORS[k] }]} />
+                <Text style={s.readoutText}>
+                  {b.counts[k]} {KIND_LABELS[k].toLowerCase()}
+                </Text>
+              </View>
+            ))}
+          </>
+        ) : (
+          <Text style={s.readoutIdle}>{idle}</Text>
+        )}
+      </View>
+
+      {panel(
+        90,
+        max,
+        STACK.map((k) => ({
+          color: KIND_COLORS[k],
+          values: buckets.map((bk) => bk.counts[k]),
+        })),
+        [String(max), max % 2 === 0 ? String(max / 2) : '', '0']
+      )}
+      <XAxis labels={buckets.map((bk) => bk.label)} ticks={ticks} />
+    </View>
+  );
+}
+
+const PAD = 5; // keeps markers at the extremes inside the plot
+
+function Segment({
+  from,
+  to,
+  color,
+}: {
+  from: { x: number; y: number };
+  to: { x: number; y: number };
+  color: string;
+}) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  return (
+    <View
+      style={{
+        position: 'absolute',
+        left: (from.x + to.x) / 2 - len / 2,
+        top: (from.y + to.y) / 2 - 1,
+        width: len,
+        height: 2,
+        borderRadius: 1,
+        backgroundColor: color,
+        transform: [{ rotate: `${Math.atan2(dy, dx)}rad` }],
+      }}
+    />
   );
 }
 
 // GitHub-style history. Diverging by the day's balance: blue = more go-here
 // visits, orange = more stay-out, neutral gray = even, empty = no visits.
 // Two steps per arm, the lighter one mixed halfway toward the surface.
-const HEAT = {
+// Shared diverging scale (stay-out orange-red -> neutral gray -> go-here blue);
+// the Life Score dial uses it too.
+export const HEAT = {
   seek2: KIND_COLORS.seek,
   seek1: '#275083',
   even: '#454b5a',
@@ -192,7 +329,10 @@ export function Heatmap({
   grid.forEach((col, w) => {
     const m = col[0].date.getMonth();
     if (w === 0 || m !== grid[w - 1][0].date.getMonth()) {
-      months.push({ col: w, label: col[0].date.toLocaleDateString(undefined, { month: 'short' }) });
+      months.push({
+        col: w,
+        label: col[0].date.toLocaleDateString(undefined, { month: 'short' }),
+      });
     }
   });
   const monthLabels = months.filter((m, i) => !(i === 0 && months[1] && months[1].col - m.col < 3));
@@ -203,12 +343,14 @@ export function Heatmap({
         {sel ? (
           <>
             <Text style={s.readoutTitle}>
-              {sel.date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
+              {sel.date.toLocaleDateString(undefined, {
+                weekday: 'short',
+                month: 'short',
+                day: 'numeric',
+              })}
             </Text>
             <Text style={s.readoutText}>
-              {sel.seek + sel.avoid === 0
-                ? 'No visits'
-                : `${sel.seek} go here · ${sel.avoid} stay out`}
+              {sel.seek + sel.avoid === 0 ? 'No visits' : `${sel.seek} go here · ${sel.avoid} stay out`}
             </Text>
           </>
         ) : (
@@ -227,7 +369,7 @@ export function Heatmap({
           </View>
           <View style={{ flexDirection: 'row', marginTop: 4 }}>
             <View style={{ width: DAY_LABEL_W, gap: GAP }}>
-              {['', 'M', '', 'W', '', 'F', ''].map((l, i) => (
+              {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((l, i) => (
                 <Text key={i} style={[s.heatDay, { height: cell, lineHeight: cell }]}>
                   {l}
                 </Text>
@@ -263,7 +405,15 @@ export function Heatmap({
           <View style={s.heatLegend}>
             <Text style={s.legendText}>Stay out</Text>
             {[HEAT.avoid2, HEAT.avoid1, HEAT.even, HEAT.seek1, HEAT.seek2].map((c) => (
-              <View key={c} style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: c }} />
+              <View
+                key={c}
+                style={{
+                  width: 10,
+                  height: 10,
+                  borderRadius: 2,
+                  backgroundColor: c,
+                }}
+              />
             ))}
             <Text style={s.legendText}>Go here</Text>
           </View>
@@ -325,7 +475,6 @@ const s = StyleSheet.create({
   swatch: { width: 10, height: 10, borderRadius: 3 },
   legendText: { color: Ink.secondary, fontSize: 13 },
 
-
   readout: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -366,10 +515,33 @@ const s = StyleSheet.create({
   xAxis: { height: 14, marginLeft: 24, marginTop: 6 },
   xTickBox: { position: 'absolute', top: 0, width: 60 },
   xTick: { color: Ink.muted, fontSize: 10 },
+  crosshair: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: 1,
+    backgroundColor: Ink.secondary,
+    opacity: 0.5,
+  },
+  marker: {
+    position: 'absolute',
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    borderWidth: 2,
+    borderColor: Ink.surface,
+  },
+  markerOn: { transform: [{ scale: 1.3 }] },
 
   heatMonth: { position: 'absolute', top: 0, color: Ink.muted, fontSize: 10 },
   heatDay: { color: Ink.muted, fontSize: 9 },
-  heatLegend: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 4, marginTop: 10 },
+  heatLegend: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
+    marginTop: 10,
+  },
   placeHead: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -1,3 +1,5 @@
+import { ROUTINES_ENABLED } from '@/constants/features';
+
 import type { Fence, FenceKind, LogEntry } from './fences';
 import type { RoutineRun } from './routines';
 
@@ -170,7 +172,7 @@ export function bandOf(score: number): LifeScore['band'] {
 // has no habits).
 function runCredit(run: RoutineRun, fences: Fence[]): number {
   const habits = fences.find((f) => f.id === run.fenceId)?.habits ?? [];
-  if (!habits.length) return 0;
+  if (!ROUTINES_ENABLED || !habits.length) return 0;
   return run.done.filter((d) => habits.some((h) => h.id === d)).length / habits.length;
 }
 

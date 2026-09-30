@@ -2,10 +2,11 @@ import { useFocusEffect } from 'expo-router';
 import React, { useCallback, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { Heatmap, Legend, StackedColumns } from '@/components/charts';
+import { Heatmap, Legend, WeekTrends } from '@/components/charts';
 import { activeRoutines, RoutineCard } from '@/components/routine-card';
 import { Dial } from '@/components/dial';
 import { Card, Dot, Icon, Row, Screen } from '@/components/ui';
+import { ROUTINES_ENABLED } from '@/constants/features';
 import { C, R, S, T } from '@/constants/ui';
 import { byDay, byPlace, heatmap, lifeScore, peakAvoidWindow } from '@/lib/analytics';
 import { Fence, KIND_COLORS, loadFences, loadLog, LogEntry } from '@/lib/fences';
@@ -63,7 +64,7 @@ export default function InsightsScreen() {
       )}
       <LifeScoreCard life={life} day={shownDay} />
 
-      {today.length > 0 && (
+      {ROUTINES_ENABLED && today.length > 0 && (
         <>
           <Text style={[T.overline, styles.section]}>Today</Text>
           {today.map((t) => (
@@ -84,27 +85,22 @@ export default function InsightsScreen() {
         />
       </Card>
 
-      <Card title="This week" right={weekTotal > 0 ? <Legend /> : undefined}>
-        {weekTotal === 0 ? (
-          <Text style={T.caption}>No fence visits in the last 7 days.</Text>
-        ) : (
-          <>
-            <StackedColumns
-              buckets={week}
-              ticks={WEEK_TICKS}
-              height={120}
-              idle={`${weekTotal} ${weekTotal === 1 ? 'visit' : 'visits'} · tap a day`}
-            />
-            {peak ? (
-              <View style={styles.pattern}>
-                <Icon name="clock" size={14} color={C.textSecondary} weight="regular" />
-                <Text style={T.caption}>
-                  Most stay-out visits: <Text style={styles.strong}>{peak}</Text>
-                </Text>
-              </View>
-            ) : null}
-          </>
-        )}
+      <Card title="This week" right={<Legend />}>
+        <>
+          <WeekTrends
+            buckets={week}
+            ticks={WEEK_TICKS}
+            idle={`${weekTotal} ${weekTotal === 1 ? 'visit' : 'visits'} · tap a day`}
+          />
+          {peak ? (
+            <View style={styles.pattern}>
+              <Icon name="clock" size={14} color={C.textSecondary} weight="regular" />
+              <Text style={T.caption}>
+                Most stay-out visits: <Text style={styles.strong}>{peak}</Text>
+              </Text>
+            </View>
+          ) : null}
+        </>
       </Card>
 
       {places.length > 0 && (
@@ -204,5 +200,10 @@ const styles = StyleSheet.create({
     borderTopColor: C.line,
   },
   strong: { color: C.text, fontWeight: '600' },
-  count: { color: C.text, fontSize: 17, fontWeight: '600', fontVariant: ['tabular-nums'] },
+  count: {
+    color: C.text,
+    fontSize: 17,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
 });

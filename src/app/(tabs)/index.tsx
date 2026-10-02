@@ -4,7 +4,7 @@ import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { Heatmap, Legend, WeekTrends } from '@/components/charts';
 import { activeRoutines, RoutineCard } from '@/components/routine-card';
-import { Dial } from '@/components/dial';
+import { Dial, zoneColor } from '@/components/dial';
 import { Card, Dot, Icon, Row, Screen } from '@/components/ui';
 import { ROUTINES_ENABLED } from '@/constants/features';
 import { C, R, S, T } from '@/constants/ui';
@@ -85,6 +85,7 @@ export default function InsightsScreen() {
         <Heatmap
           grid={history}
           onSelect={setDay}
+          colorOf={(d) => zoneColor(lifeScore(log, runs, fences, d.date, 1).score)}
           idle={
             activeDays
               ? `${activeDays} days with visits · tap a day`

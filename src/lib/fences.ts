@@ -2,11 +2,23 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
-import { Vibration } from 'react-native';
+import { AppState, Vibration } from 'react-native';
 
 import { ROUTINES_ENABLED } from '@/constants/features';
 
 import { distanceMeters, enclosingCircle, LatLng, nearPolygon } from './geo';
+import { ringAlarm } from './alarm';
+import {
+  activeTimers,
+  createIntervention,
+  loadInterventions,
+  markStayed,
+  openApproach,
+  promoteToArrival,
+  recordExit,
+} from './interventions';
+import { placeStreak } from './analytics';
+import { openOnce } from './nav';
 import { decideEnter, Presence } from './presence';
 import { Habit, loadRuns, startRun } from './routines';
 import { syncWidget } from './widget';
@@ -47,6 +59,13 @@ export type LogEntry = {
 export const GEOFENCE_TASK = 'sentry-geofence-task';
 export const MIN_RADIUS = 100; // iOS region monitoring gets flaky below ~100m
 export const MAX_FENCES = 20; // hard iOS limit on monitored regions per app
+// Stay Out places also get an outer warning ring this much wider than their
+// circle, so Sentry can interject while you're still on the way. Rings use
+// whatever region slots the fences themselves leave free.
+export const APPROACH_EXTRA_M = 400;
+const RING = 'approach:';
+const ringsFor = (fences: Fence[]) =>
+  fences.filter((f) => f.kind === 'avoid').slice(0, Math.max(0, MAX_FENCES - fences.length));
 
 const FENCES_KEY = 'sentry-fences';
 const LOG_KEY = 'sentry-entry-log';
@@ -147,9 +166,13 @@ async function seedPresence(fences: Fence[]): Promise<void> {
   if (!pos) return;
   const presence = await loadPresence();
   const now = new Date().toISOString();
-  for (const f of fences) {
-    const inside = distanceMeters(pos, f.center) <= f.radius;
-    if (inside && !presence[f.id]?.inside) presence[f.id] = { inside: true, since: now };
+  const regions = [
+    ...fences.map((f) => ({ id: f.id, f, r: f.radius })),
+    ...ringsFor(fences).map((f) => ({ id: RING + f.id, f, r: f.radius + APPROACH_EXTRA_M })),
+  ];
+  for (const { id, f, r } of regions) {
+    const inside = distanceMeters(pos, f.center) <= r;
+    if (inside && !presence[id]?.inside) presence[id] = { inside: true, since: now };
   }
   await savePresence(presence);
 }
@@ -177,16 +200,26 @@ export async function startMonitoring(fences: Fence[]): Promise<void> {
   await seedPresence(fences);
   await Location.startGeofencingAsync(
     GEOFENCE_TASK,
-    fences.slice(0, MAX_FENCES).map((f) => ({
-      identifier: f.id,
-      latitude: f.center.latitude,
-      longitude: f.center.longitude,
-      radius: f.radius,
-      notifyOnEnter: true,
-      // Exits let us tell a real arrival from iOS re-reporting a fence
-      // you never left (see presence.ts).
-      notifyOnExit: true,
-    }))
+    [
+      ...fences.slice(0, MAX_FENCES).map((f) => ({
+        identifier: f.id,
+        latitude: f.center.latitude,
+        longitude: f.center.longitude,
+        radius: f.radius,
+        notifyOnEnter: true,
+        // Exits let us tell a real arrival from iOS re-reporting a fence
+        // you never left (see presence.ts).
+        notifyOnExit: true,
+      })),
+      ...ringsFor(fences).map((f) => ({
+        identifier: RING + f.id,
+        latitude: f.center.latitude,
+        longitude: f.center.longitude,
+        radius: f.radius + APPROACH_EXTRA_M,
+        notifyOnEnter: true,
+        notifyOnExit: true, // leaving the ring before arriving = turned around
+      })),
+    ]
   );
   await refreshWidget();
 }
@@ -219,11 +252,19 @@ async function currentPosition(): Promise<LatLng | null> {
 export async function buzz(
   title: string,
   body: string,
-  opts: { data?: Record<string, string>; category?: string } = {}
+  // Time-sensitive alerts break through Focus and notification summaries.
+  opts: { data?: Record<string, string>; category?: string; urgent?: boolean } = {}
 ): Promise<void> {
   Vibration.vibrate([0, 400, 200, 400]);
   await Notifications.scheduleNotificationAsync({
-    content: { title, body, sound: true, data: opts.data, categoryIdentifier: opts.category },
+    content: {
+      title,
+      body,
+      sound: true,
+      data: opts.data,
+      categoryIdentifier: opts.category,
+      ...(opts.urgent ? { interruptionLevel: 'timeSensitive' as const } : {}),
+    },
     trigger: null,
   });
 }
@@ -265,9 +306,18 @@ async function handleAlertAnswer(r: Notifications.NotificationResponse): Promise
   const outcome = OUTCOMES[r.actionIdentifier];
   const entryTs = r.notification.request.content.data?.entryTs;
   if (!outcome || typeof entryTs !== 'string') return;
+  // Don't overwrite an earlier answer (e.g. the same tap seen again on launch).
+  await setEntryOutcome(entryTs, outcome, false);
+}
+
+async function setEntryOutcome(
+  entryTs: string,
+  outcome: NonNullable<LogEntry['outcome']>,
+  overwrite: boolean
+): Promise<void> {
   const log = await loadLog();
   const i = log.findIndex((e) => e.ts === entryTs);
-  if (i < 0 || log[i].outcome) return; // already answered (e.g. seen again on launch)
+  if (i < 0 || (log[i].outcome && !overwrite)) return;
   log[i] = { ...log[i], outcome };
   await AsyncStorage.setItem(LOG_KEY, JSON.stringify(log));
   await refreshWidget();
@@ -299,9 +349,15 @@ TaskManager.defineTask(GEOFENCE_TASK, async ({ data, error }: { data: any; error
   const presence = await loadPresence();
   const now = new Date();
 
+  if (id.startsWith(RING)) {
+    await handleRingEvent(id, id.slice(RING.length), data.eventType, presence, now);
+    return;
+  }
+
   if (data.eventType === Location.GeofencingEventType.Exit) {
     presence[id] = { inside: false, since: now.toISOString() };
     await savePresence(presence);
+    await handleExit(id, now);
     // Left the circle without reaching the shape: a drive-by, not a visit.
     const pending = await loadPending();
     if (pending[id]) {
@@ -332,6 +388,58 @@ TaskManager.defineTask(GEOFENCE_TASK, async ({ data, error }: { data: any; error
   if (fix) await checkPending(fix);
   await syncVerifier();
 });
+
+// Outer warning ring around a Stay Out place: entering means you're on your
+// way (interject now); leaving before you arrive means you turned around.
+async function handleRingEvent(
+  ringId: string,
+  fenceId: string,
+  eventType: Location.GeofencingEventType,
+  presence: Presence,
+  now: Date
+): Promise<void> {
+  if (eventType === Location.GeofencingEventType.Exit) {
+    presence[ringId] = { inside: false, since: now.toISOString() };
+    await savePresence(presence);
+    await handleTurnAround(fenceId, now);
+    return;
+  }
+  if (eventType !== Location.GeofencingEventType.Enter) return;
+
+  const fence = (await loadFences()).find((f) => f.id === fenceId);
+  if (!fence) return;
+  const last = (await loadInterventions()).find((s) => s.placeId === fenceId)?.approachedAt ?? null;
+  const decision = decideEnter(presence, ringId, last, now);
+  presence[ringId] = {
+    inside: true,
+    since: presence[ringId]?.inside ? presence[ringId].since : now.toISOString(),
+  };
+  await savePresence(presence);
+  // Already at the place itself: the arrival flow has it.
+  if (decision !== 'arrival' || presence[fenceId]?.inside) return;
+  await handleApproach(fence, now);
+}
+
+async function handleTurnAround(fenceId: string, now: Date): Promise<void> {
+  for (const { session } of await recordExit(fenceId, now, 'approach')) {
+    await buzz(`You turned around.`, `${session.placeName} is behind you. That's a win.`, {
+      data: { url: `/intervention/${session.id}` },
+    });
+  }
+}
+
+async function handleApproach(fence: Fence, now: Date): Promise<void> {
+  const log = await loadLog();
+  const streak = placeStreak(log, fence.id, 'avoid', fence.createdAt, now);
+  const session = await createIntervention(fence.id, fence.name, '', streak, 'approach', now);
+  const url = `/intervention/${session.id}`;
+  await buzz(`Heading toward ${fence.name}?`, "You chose to avoid it. Turn around now and it's an easy win.", {
+    data: { url },
+    urgent: true,
+  });
+  await ringAlarm(`Heading toward ${fence.name}?`);
+  if (AppState.currentState === 'active') openOnce(url);
+}
 
 type Fix = { coords: LatLng; accuracy: number };
 
@@ -378,9 +486,45 @@ async function checkPending(fix: Fix): Promise<void> {
   await savePending(pending);
 }
 
-// Run precise location updates only while some circle entry is unconfirmed.
+// While an exit timer runs, the iOS circle exit is too coarse and slow, so
+// leaving the drawn shape (by more than the fix's error) counts as leaving.
+async function checkExitTimers(fix: Fix): Promise<void> {
+  const now = Date.now();
+  const all = await loadInterventions();
+  const fences = await loadFences();
+  for (const s of all) {
+    if (!s.timer || s.exitedAt) continue;
+    if (now > Date.parse(s.timer.endsAt)) {
+      await markStayed(s.id); // the scheduled "Still at …?" alert takes it from here
+      continue;
+    }
+    const fence = fences.find((f) => f.id === s.placeId);
+    const slack = Math.max(fix.accuracy, MAX_EDGE_SLACK_M);
+    if (fence && !nearPolygon(fix.coords, fence.polygon, slack)) await handleExit(fence.id, new Date());
+  }
+}
+
+// You left a stay-out place: close its intervention, and if you left in time,
+// the visit counts as skipped so the streak holds.
+async function handleExit(fenceId: string, at: Date): Promise<void> {
+  for (const { session, win } of await recordExit(fenceId, at)) {
+    if (!win) continue;
+    if (session.entryTs) await setEntryOutcome(session.entryTs, 'skipped', true);
+    await buzz(`You left ${session.placeName}.`, 'Boundary kept. Your streak holds.', {
+      data: { url: `/intervention/${session.id}` },
+    });
+  }
+}
+
+// Called after the Intervention screen starts an exit timer.
+export async function watchExitTimers(): Promise<void> {
+  await syncVerifier();
+}
+
+// Run precise location updates only while some circle entry is unconfirmed
+// or an exit timer is running.
 async function syncVerifier(): Promise<void> {
-  const want = Object.keys(await loadPending()).length > 0;
+  const want = Object.keys(await loadPending()).length > 0 || (await activeTimers()).length > 0;
   const running = await Location.hasStartedLocationUpdatesAsync(VERIFY_TASK).catch(() => false);
   if (want && !running) {
     await Location.startLocationUpdatesAsync(VERIFY_TASK, {
@@ -400,7 +544,9 @@ async function syncVerifier(): Promise<void> {
 TaskManager.defineTask(VERIFY_TASK, async ({ data, error }: { data: any; error: any }) => {
   if (error || !data?.locations?.length) return;
   const loc = data.locations[data.locations.length - 1];
-  await checkPending({ coords: loc.coords, accuracy: loc.coords.accuracy ?? 999 });
+  const fix = { coords: loc.coords, accuracy: loc.coords.accuracy ?? 999 };
+  await checkPending(fix);
+  await checkExitTimers(fix);
   await syncVerifier();
 });
 
@@ -422,10 +568,24 @@ async function handleArrival(fence: Fence, now: Date, insidePolygon: boolean | n
 
   const reason = fence.reason?.trim();
   if (fence.kind === 'avoid') {
-    await buzz(`You're at ${fence.name}. Going in?`, reason || 'You wanted to skip this one. Pause for a second?', {
+    // Tapping opens the Intervention screen; the buttons still answer inline.
+    // Continue the approach session if there was one (the warning didn't work).
+    const approach = await openApproach(fence.id);
+    const before = (await loadLog()).filter((e) => e.ts !== entryTs);
+    const streak = placeStreak(before, fence.id, 'avoid', fence.createdAt, now);
+    const session =
+      (approach && (await promoteToArrival(approach.id, entryTs))) ??
+      (await createIntervention(fence.id, fence.name, entryTs, streak));
+    const url = `/intervention/${session.id}`;
+    await buzz(`You're at ${fence.name}.`, 'Want Sentry to help you get out of here?', {
       category: STAY_OUT_CATEGORY,
-      data: { entryTs },
+      data: { entryTs, url },
+      urgent: true,
     });
+    await ringAlarm(`You're at ${fence.name}`);
+    // iOS won't let an app bring itself forward, but if Sentry is already
+    // open, skip the tap and go straight to the intervention.
+    if (AppState.currentState === 'active') openOnce(url);
   } else if (ROUTINES_ENABLED && fence.habits?.length) {
     // Tapping opens the checklist (see useNotificationLinks in the root layout).
     await startRun(fence.id, now);
@@ -445,4 +605,18 @@ async function handleArrival(fence: Fence, now: Date, insidePolygon: boolean | n
 // check on purpose so it always counts.
 export async function simulateArrival(fence: Fence): Promise<void> {
   await handleArrival(fence, new Date(), true, true);
+}
+
+// Test hooks: approaching / turning around, without driving anywhere.
+export async function simulateApproach(fence: Fence): Promise<void> {
+  await handleApproach(fence, new Date());
+}
+
+export async function simulateTurnAround(fence: Fence): Promise<void> {
+  await handleTurnAround(fence.id, new Date());
+}
+
+// Test hook: act as if you just walked out of this fence.
+export async function simulateExit(fence: Fence): Promise<void> {
+  await handleExit(fence.id, new Date());
 }

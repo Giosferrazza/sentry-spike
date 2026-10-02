@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Button, Dot, Icon } from '@/components/ui';
 import { C, R, S, T } from '@/constants/ui';
+import { requestAlarmAuthorization } from '@/lib/alarm';
 import { KIND_COLORS, KIND_LABELS } from '@/lib/fences';
 import { finishOnboarding } from '@/lib/onboarding';
 import { saveName } from '@/lib/profile';
@@ -34,6 +35,7 @@ export default function Onboarding() {
       await Notifications.requestPermissionsAsync();
       const fg = await Location.requestForegroundPermissionsAsync();
       if (fg.status === 'granted') await Location.requestBackgroundPermissionsAsync();
+      await requestAlarmAuthorization();
     } finally {
       setAsking(false);
       await done();
@@ -107,9 +109,9 @@ export default function Onboarding() {
             <Icon name="bell.badge" size={48} />
             <Text style={T.largeTitle}>Turn on alerts</Text>
             <Text style={styles.lead}>
-              Sentry needs notifications and location set to{' '}
-              <Text style={styles.strong}>Always</Text> so it can notice arrivals while your phone is
-              in your pocket. Your location never leaves this phone.
+              Sentry needs notifications, alarms, and location set to{' '}
+              <Text style={styles.strong}>Always</Text> so it can step in before you reach a Stay Out
+              place, even with your phone in your pocket. Your location never leaves this phone.
             </Text>
           </>
         )}

@@ -283,27 +283,16 @@ function Segment({
   );
 }
 
-// GitHub-style history. Diverging by the day's balance: blue = more go-here
-// visits, orange = more stay-out, neutral gray = even, empty = no visits.
-// Two steps per arm, the lighter one mixed halfway toward the surface.
-// Shared diverging scale (stay-out orange-red -> neutral gray -> go-here blue);
-// the Life Score dial uses it too.
+// GitHub-style history. Each day with visits takes the dial zone color of that
+// day's Life Score (see colorOf), so tapping a square moves the needle into the
+// matching zone. Empty = no visits.
+// Shared three-color scale (stay-out red -> neutral gray -> go-here blue).
 export const HEAT = {
-  seek2: KIND_COLORS.seek,
-  seek1: '#275083',
+  seek: KIND_COLORS.seek,
   even: '#454b5a',
-  avoid1: '#773924',
-  avoid2: KIND_COLORS.avoid,
+  avoid: KIND_COLORS.avoid,
   empty: '#1d212c',
 };
-
-function heatColor(d: HeatDay): string {
-  if (d.seek + d.avoid === 0) return HEAT.empty;
-  const net = d.seek - d.avoid;
-  if (net === 0) return HEAT.even;
-  if (net > 0) return net >= 2 ? HEAT.seek2 : HEAT.seek1;
-  return -net >= 2 ? HEAT.avoid2 : HEAT.avoid1;
-}
 
 const GAP = 3;
 const DAY_LABEL_W = 18;
@@ -311,10 +300,13 @@ const DAY_LABEL_W = 18;
 export function Heatmap({
   grid,
   idle,
+  colorOf,
   onSelect,
 }: {
   grid: HeatDay[][];
   idle: string;
+  // Color for a day with visits.
+  colorOf: (d: HeatDay) => string;
   // Called with the tapped day, or null when the selection is cleared.
   onSelect?: (day: Date | null) => void;
 }) {
@@ -393,7 +385,7 @@ export function Heatmap({
                         width: cell,
                         height: cell,
                         borderRadius: 3,
-                        backgroundColor: d.future ? 'transparent' : heatColor(d),
+                        backgroundColor: d.future ? 'transparent' : d.seek + d.avoid === 0 ? HEAT.empty : colorOf(d),
                         borderWidth: sel && sel.date.getTime() === d.date.getTime() ? 1.5 : 0,
                         borderColor: Ink.primary,
                       }}
@@ -405,7 +397,7 @@ export function Heatmap({
           </View>
           <View style={s.heatLegend}>
             <Text style={s.legendText}>Stay out</Text>
-            {[HEAT.avoid2, HEAT.avoid1, HEAT.even, HEAT.seek1, HEAT.seek2].map((c) => (
+            {[HEAT.avoid, HEAT.even, HEAT.seek].map((c) => (
               <View
                 key={c}
                 style={{

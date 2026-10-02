@@ -20,10 +20,10 @@ const ARC = 12; // arc thickness
 const DURATION = 900;
 const NEUTRAL = 50;
 
-// Zone colors along the arc, one per Life Score band, on the app's diverging
-// scale: Rough week (stay-out red) -> Mixed (gray) -> On track -> Thriving (go-here blue).
+// Three zone colors along the arc, shared with the History squares: Rough week
+// (stay-out red) -> Mixed (gray) -> On track / Thriving (go-here blue).
 export function zoneColor(score: number) {
-  return score >= 80 ? HEAT.seek2 : score >= 60 ? HEAT.seek1 : score >= 40 ? HEAT.even : HEAT.avoid2;
+  return score >= 60 ? HEAT.seek : score >= 40 ? HEAT.even : HEAT.avoid;
 }
 
 // Runs on the UI thread inside the needle's animated style, so it's a worklet.

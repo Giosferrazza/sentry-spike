@@ -6,6 +6,7 @@ import { ActionSheetIOS, Alert, Linking, Pressable, Share, StyleSheet, Text, Vie
 
 import { Button, Card, Dot, Icon, Row, Screen } from '@/components/ui';
 import { C, S, T } from '@/constants/ui';
+import { requestAlarmAuthorization } from '@/lib/alarm';
 import { exportData, importData } from '@/lib/backup';
 import { resetOnboarding } from '@/lib/onboarding';
 import { loadSampleHistory } from '@/lib/sample-data';
@@ -18,7 +19,10 @@ import {
   loadFences,
   loadLog,
   LogEntry,
+  simulateApproach,
   simulateArrival,
+  simulateExit,
+  simulateTurnAround,
   startMonitoring,
   stopMonitoring,
 } from '@/lib/fences';
@@ -74,6 +78,8 @@ export default function MonitorScreen() {
       return;
     }
     await Location.requestBackgroundPermissionsAsync();
+    // Full-screen alarm for Stay Out places (iOS 26); fine if declined.
+    await requestAlarmAuthorization();
     await startMonitoring(fences);
     refresh();
   };
@@ -109,6 +115,19 @@ export default function MonitorScreen() {
           refresh();
         },
       ]),
+      ...fences
+        .filter((f) => f.kind === 'avoid')
+        .flatMap((f): [string, () => Promise<void>][] => [
+          [`Approach ${f.name}`, () => simulateApproach(f)],
+          [`Turn around from ${f.name}`, () => simulateTurnAround(f)],
+          [
+            `Leave ${f.name}`,
+            async () => {
+              await simulateExit(f);
+              refresh();
+            },
+          ],
+        ]),
       ...(sample.length
         ? ([
             [

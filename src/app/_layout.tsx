@@ -1,11 +1,14 @@
 import * as Notifications from 'expo-notifications';
 import { DarkTheme, router, Stack, ThemeProvider } from 'expo-router';
 import { useEffect, useRef } from 'react';
+import { AppState } from 'react-native';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { C } from '@/constants/ui';
 // Also registers the background geofence task at module scope.
 import { migrateRegions, refreshWidget } from '@/lib/fences';
+import { unseenIntervention } from '@/lib/interventions';
+import { openOnce } from '@/lib/nav';
 import { needsOnboarding } from '@/lib/onboarding';
 
 // Show nudges as banners even while the app is open.
@@ -30,6 +33,7 @@ export default function RootLayout() {
   }, []);
 
   useNotificationLinks();
+  useAutoIntervention();
 
   return (
     <ThemeProvider value={theme}>
@@ -37,6 +41,7 @@ export default function RootLayout() {
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: C.bg } }}>
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="routine/[id]" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="intervention/[id]" options={{ presentation: 'modal' }} />
         <Stack.Screen
           name="onboarding"
           options={{ presentation: 'fullScreenModal', gestureEnabled: false, animation: 'fade' }}
@@ -57,6 +62,20 @@ function useNotificationLinks() {
     const url = response.notification.request.content.data?.url;
     if (handled.current === id || typeof url !== 'string') return;
     handled.current = id;
-    router.push(url as never);
+    openOnce(url);
   }, [response]);
+}
+
+// An intervention you haven't seen opens by itself whenever Sentry comes to
+// the foreground, however you opened it.
+function useAutoIntervention() {
+  useEffect(() => {
+    const check = () =>
+      unseenIntervention()
+        .then((s) => s && openOnce(`/intervention/${s.id}`))
+        .catch(() => {});
+    check();
+    const sub = AppState.addEventListener('change', (st) => st === 'active' && check());
+    return () => sub.remove();
+  }, []);
 }

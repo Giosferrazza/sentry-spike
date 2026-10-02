@@ -13,6 +13,8 @@
       "bundleIdentifier": "com.giosferrazza.sentryspike",
       "appleTeamId": "72TAPSBT32",
       "infoPlist": {
+        "NSSupportsLiveActivities": true,
+        "NSAlarmKitUsageDescription": "Sentry rings like an alarm when you're heading into a place you chose to avoid, so it can't be missed.",
         "UIBackgroundModes": [
           "location",
           "fetch"
@@ -25,7 +27,8 @@
       "entitlements": {
         "com.apple.security.application-groups": [
           "group.com.giosferrazza.sentryspike"
-        ]
+        ],
+        "com.apple.developer.usernotifications.time-sensitive": true
       },
       "config": {
         "usesNonExemptEncryption": false
